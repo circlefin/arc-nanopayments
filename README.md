@@ -39,7 +39,9 @@ Circle Gateway batches many signed offchain authorizations into a single onchain
    cp .env.example .env.local
    ```
 
-   Then edit `.env.local` and fill in all required values (see [Environment Variables](#environment-variables) section below).
+   Then edit `.env.local` and fill in the required values listed in [Environment Variables](#environment-variables):
+   - Add the three Supabase values after completing step 4 below.
+   - For the wallet values, either enter your own testnet wallets or run step 3 to generate them automatically.
 
 3. Generate seller and buyer wallets:
 
@@ -47,7 +49,7 @@ Circle Gateway batches many signed offchain authorizations into a single onchain
    npm run generate-wallets
    ```
 
-   This creates two EVM wallets (seller and buyer) and writes the addresses and private keys to `.env.local`. Follow the on-screen instructions to fund the buyer wallet with testnet USDC via the [Circle faucet](https://faucet.circle.com/).
+   This optional step creates two EVM wallets (seller and buyer) and writes the addresses and private keys to `.env.local`. Use it if you do not want to provide your own wallet values manually. Follow the on-screen instructions to fund the buyer wallet with testnet USDC via the [Circle faucet](https://faucet.circle.com/).
 
 4. Set up the database — Choose one of the two paths below:
 
@@ -157,6 +159,17 @@ BUYER_PRIVATE_KEY=0xYourBuyerPrivateKey
 # AI Payment Agent (optional — omit to run in mock mode)
 # OPENAI_API_KEY=your-openai-api-key
 ```
+
+Required before the app can connect to Supabase:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+For wallet values, choose one setup path:
+
+- Run `npm run generate-wallets` to auto-populate `SELLER_ADDRESS`, `SELLER_PRIVATE_KEY`, `BUYER_ADDRESS`, and `BUYER_PRIVATE_KEY` in `.env.local`.
+- Or enter those four wallet values yourself if you already have testnet wallets you want to use.
 
 | Variable | Scope | Purpose |
 | --- | --- | --- |
