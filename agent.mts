@@ -71,6 +71,7 @@ if (!funderKey) {
 
 const ARC_TESTNET_USDC = "0x3600000000000000000000000000000000000000" as const;
 const ARC_TESTNET_RPC = "https://rpc.testnet.arc.network";
+const ARC_TESTNET_EXPLORER_TX_BASE = "https://testnet.arcscan.io/tx/";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
 const DEPOSIT_AMOUNT = process.env.DEPOSIT_AMOUNT ?? "1";
@@ -87,6 +88,19 @@ const endpoints = [
   },
   { url: `${BASE_URL}/api/premium/agent-task`, method: "GET" as const },
 ];
+
+const txUrl = (hash: string) => `${ARC_TESTNET_EXPLORER_TX_BASE}${hash}`;
+
+function logGatewayBalances(label: string, balances: Awaited<ReturnType<GatewayClient["getBalances"]>>) {
+  console.log(
+    `${label}: wallet ${balances.wallet.formatted} USDC | gateway available ${balances.gateway.formattedAvailable} | total ${balances.gateway.formattedTotal}`,
+  );
+}
+
+function logTx(label: string, hash: string) {
+  console.log(`  ${label}: ${hash}`);
+  console.log(`    Explorer: ${txUrl(hash)}`);
+}
 
 // --- Generate ephemeral wallet ---
 const ephemeralKey = generatePrivateKey();
@@ -140,7 +154,7 @@ const gasTxHash = await withNonceRetry(
   "Gas tx",
 );
 await publicClient.waitForTransactionReceipt({ hash: gasTxHash });
-console.log(`  Gas funded (${gasTxHash.slice(0, 10)}...)`);
+logTx("Gas funded", gasTxHash);
 
 const usdcTxHash = await withNonceRetry(
   () => funderWallet.writeContract({
@@ -152,7 +166,7 @@ const usdcTxHash = await withNonceRetry(
   "USDC tx",
 );
 await publicClient.waitForTransactionReceipt({ hash: usdcTxHash });
-console.log(`  USDC transferred (${usdcTxHash.slice(0, 10)}...)`);
+logTx("USDC transferred", usdcTxHash);
 
 
 // --- Create GatewayClient with the ephemeral wallet ---
@@ -173,12 +187,16 @@ const REDEPOSIT_THRESHOLD = 500_000n;
 
 async function depositToGateway() {
   console.log(`Depositing ${DEPOSIT_AMOUNT} USDC into Gateway Wallet...`);
+  const before = await gateway.getBalances();
+  logGatewayBalances("  Balance before deposit", before);
   const result = await gateway.deposit(DEPOSIT_AMOUNT);
-  console.log(`Deposit complete! TX: ${result.depositTxHash}`);
+  if (result.approvalTxHash) {
+    logTx("Approval tx", result.approvalTxHash);
+  }
+  console.log(`Deposit complete! Added ${result.formattedAmount} USDC to Gateway.`);
+  logTx("Deposit tx", result.depositTxHash);
   const updated = await gateway.getBalances();
-  console.log(
-    `Gateway available balance: ${updated.gateway.formattedAvailable}`,
-  );
+  logGatewayBalances("  Balance after deposit", updated);
 }
 
 async function refundAndRedeposit() {
@@ -193,6 +211,7 @@ async function refundAndRedeposit() {
     "Redeposit tx",
   );
   await publicClient.waitForTransactionReceipt({ hash: txHash });
+  logTx("Redeposit USDC transfer", txHash);
   await depositToGateway();
 }
 
@@ -278,6 +297,10 @@ function startPaymentLoop() {
         console.log(
           `#${index} ${ep.method} ${ep.url.split("/").pop()} -> ${result.formattedAmount} USDC (${ms}ms) [in-flight: ${inFlight}]${limitInfo}`,
         );
+        if (result.transaction) {
+          console.log(`   Settlement tx: ${result.transaction}`);
+          console.log(`   Explorer: ${txUrl(result.transaction)}`);
+        }
 
         if (spendingLimit !== null && totalSpent >= spendingLimit) {
           handleLimitReached();
