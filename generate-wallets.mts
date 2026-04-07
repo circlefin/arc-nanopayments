@@ -63,7 +63,11 @@ ${bold("Next steps:")}
 
      Paste this address: ${cyan(buyer.address)}
 
-  ${dim("2.")} Start the dev server:        ${cyan("npm run dev")}
-  ${dim("3.")} Run payment agents:          ${cyan("npm run agent")}
+  ${dim("2.")} Set up Supabase before starting the app.
+     Complete the local or remote Supabase steps in the README and fill in the
+     required Supabase values in ${cyan(".env.local")}.
+
+  ${dim("3.")} Start the dev server:        ${cyan("npm run dev")}
+  ${dim("4.")} Run payment agents:          ${cyan("npm run agent")}
      Run as many in parallel as you like — each spawns its own ephemeral wallet.
 `);
