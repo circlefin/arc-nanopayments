@@ -42,8 +42,45 @@ interface PaymentPayload {
   extensions?: Record<string, unknown>;
 }
 
-function buildPaymentRequirements(price: string) {
-  // Parse dollar amount to USDC atomic units (6 decimals)
+interface SupportedKind {
+  scheme: string;
+  network: string;
+  extra?: {
+    verifyingContract?: string;
+  };
+}
+
+let cachedArcVerifyingContract: string | null = null;
+
+async function getArcVerifyingContract() {
+  if (cachedArcVerifyingContract) {
+    return cachedArcVerifyingContract;
+  }
+
+  try {
+    const supported = await facilitator.getSupported();
+    const arcKind = (supported.kinds as SupportedKind[]).find(
+      (kind) =>
+        kind.scheme === "exact" &&
+        kind.network === ARC_TESTNET_NETWORK &&
+        typeof kind.extra?.verifyingContract === "string",
+    );
+
+    if (arcKind?.extra?.verifyingContract) {
+      cachedArcVerifyingContract = arcKind.extra.verifyingContract;
+      return cachedArcVerifyingContract;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[x402] Failed to fetch supported kinds:", message);
+  }
+
+  // Fallback keeps the route operational if supported lookup is transiently unavailable.
+  return ARC_TESTNET_GATEWAY_WALLET;
+}
+
+async function buildPaymentRequirements(price: string) {
+  const verifyingContract = await getArcVerifyingContract();
   const amount = Math.round(parseFloat(price.replace("$", "")) * 1_000_000);
 
   return {
@@ -52,11 +89,13 @@ function buildPaymentRequirements(price: string) {
     asset: ARC_TESTNET_USDC,
     amount: amount.toString(),
     payTo: sellerAddress,
-    maxTimeoutSeconds: 345600,
+    // Gateway currently rejects short authorization windows.
+    // Use a longer validity period to avoid authorization_validity_too_short.
+    maxTimeoutSeconds: 31536000,
     extra: {
       name: "GatewayWalletBatched",
       version: "1",
-      verifyingContract: ARC_TESTNET_GATEWAY_WALLET,
+      verifyingContract,
     },
   };
 }
@@ -72,9 +111,8 @@ export function withGateway(
   price: string,
   endpoint: string,
 ) {
-  const requirements = buildPaymentRequirements(price);
-
   return async (req: NextRequest) => {
+    const requirements = await buildPaymentRequirements(price);
     const paymentSignature = req.headers.get("payment-signature");
 
     // No payment — return 402 with Gateway batching payment requirements
@@ -108,12 +146,31 @@ export function withGateway(
         Buffer.from(paymentSignature, "base64").toString("utf-8"),
       );
 
+      const acceptedNetwork =
+        typeof paymentPayload.accepted?.network === "string"
+          ? paymentPayload.accepted.network
+          : null;
+
+      if (acceptedNetwork && acceptedNetwork !== requirements.network) {
+        return NextResponse.json(
+          {
+            error: "Unsupported payment network",
+            expected: requirements.network,
+            received: acceptedNetwork,
+          },
+          { status: 400 },
+        );
+      }
+
       const verifyResult = await facilitator.verify(
         paymentPayload,
         requirements,
       );
 
       if (!verifyResult.isValid) {
+        console.error(
+          `[x402] Verification failed for ${endpoint}: ${verifyResult.invalidReason ?? "unknown"}`,
+        );
         return NextResponse.json(
           {
             error: "Payment verification failed",

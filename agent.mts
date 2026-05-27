@@ -35,6 +35,27 @@ let { spendingLimit } = parseArgs();
 let totalSpent = 0;
 let paused = false;
 
+function formatPaymentError(err: unknown) {
+  if (err instanceof Error) {
+    const cause = err.cause as
+      | { shortMessage?: string; details?: string }
+      | undefined;
+    const parts = [err.message];
+
+    if (cause?.shortMessage && !parts.includes(cause.shortMessage)) {
+      parts.push(cause.shortMessage);
+    }
+
+    if (cause?.details && !parts.includes(cause.details)) {
+      parts.push(cause.details);
+    }
+
+    return parts.join(" | ");
+  }
+
+  return String(err);
+}
+
 if (spendingLimit !== null) {
   console.log(`Spending limit: ${spendingLimit} USDC`);
 }
@@ -260,7 +281,8 @@ function startPaymentLoop() {
     if (paused) return;
 
     const ep = endpoints[index % endpoints.length];
-    index++;
+    const requestId = ++index;
+    const endpointName = ep.url.split("/").pop();
     inFlight++;
 
     const start = Date.now();
@@ -276,7 +298,7 @@ function startPaymentLoop() {
           ? ` [spent: ${totalSpent.toFixed(6)}/${spendingLimit.toFixed(6)} USDC]`
           : "";
         console.log(
-          `#${index} ${ep.method} ${ep.url.split("/").pop()} -> ${result.formattedAmount} USDC (${ms}ms) [in-flight: ${inFlight}]${limitInfo}`,
+          `#${requestId} ${ep.method} ${endpointName} -> ${result.formattedAmount} USDC (${ms}ms) [in-flight: ${inFlight}]${limitInfo}`,
         );
 
         if (spendingLimit !== null && totalSpent >= spendingLimit) {
@@ -286,8 +308,9 @@ function startPaymentLoop() {
       .catch((err) => {
         inFlight--;
         const ms = Date.now() - start;
+        const errorDetails = formatPaymentError(err);
         console.error(
-          `#${index} ${ep.url.split("/").pop()} FAILED (${ms}ms): ${err.message} [in-flight: ${inFlight}]`,
+          `#${requestId} ${ep.method} ${endpointName} FAILED (${ms}ms): ${errorDetails} [in-flight: ${inFlight}]`,
         );
       });
   }, 1000);

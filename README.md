@@ -71,7 +71,7 @@ Circle Gateway batches many signed offchain authorizations into a single onchain
    Requires a [Supabase](https://supabase.com/) account and project.
 
    ```bash
-   npx supabase link --project-ref <your-project-ref>
+   npx supabase link --project-ref tjjptretakkntnqyooal
    npx supabase db push
    ```
 
