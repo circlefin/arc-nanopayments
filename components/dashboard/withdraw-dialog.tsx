@@ -41,7 +41,7 @@ import { BanknoteArrowDown, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 const CHAIN_EXPLORERS: Record<string, string> = {
-  arcTestnet: "https://testnet.arcscan.io/tx/",
+  arcTestnet: "https://testnet.arcscan.app/tx/",
   baseSepolia: "https://sepolia.basescan.org/tx/",
   sepolia: "https://sepolia.etherscan.io/tx/",
   arbitrumSepolia: "https://sepolia.arbiscan.io/tx/",
