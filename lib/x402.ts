@@ -52,7 +52,7 @@ function buildPaymentRequirements(price: string) {
     asset: ARC_TESTNET_USDC,
     amount: amount.toString(),
     payTo: sellerAddress,
-    maxTimeoutSeconds: 345600,
+    maxTimeoutSeconds: 604800,
     extra: {
       name: "GatewayWalletBatched",
       version: "1",
@@ -114,6 +114,9 @@ export function withGateway(
       );
 
       if (!verifyResult.isValid) {
+        console.error(
+          `[x402] Verification failed for ${endpoint}: ${verifyResult.invalidReason}`,
+        );
         return NextResponse.json(
           {
             error: "Payment verification failed",
