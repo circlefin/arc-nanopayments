@@ -28,8 +28,8 @@ Circle Gateway batches many signed offchain authorizations into a single onchain
 1. Clone the repository and install dependencies:
 
    ```bash
-   git clone https://github.com/akelani-circle/arc-nanopayments-demo.git
-   cd arc-nanopayments-demo
+   git clone https://github.com/circlefin/arc-nanopayments.git
+   cd arc-nanopayments
    npm install
    ```
 
