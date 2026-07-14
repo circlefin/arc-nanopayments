@@ -1,6 +1,6 @@
 # Arc Nanopayments Demo
 
-Demonstrate gasless USDC nanopayments using [Circle Nanopayments](https://www.circle.com/nanopayments) on Arc. A **LangChain agent** acts as the buyer, autonomously paying for paywalled resources, while a **Next.js web app** acts as the seller, exposing x402-protected endpoints and providing a seller dashboard to monitor payments and withdraw earnings.
+Demonstrate gasless USDC nanopayments using [Circle Nanopayments](https://www.circle.com/nanopayments) on Arc. A scripted payment agent acts as the buyer, automatically paying for paywalled resources at a fixed rate, while a **Next.js web app** acts as the seller, exposing x402-protected endpoints and providing a seller dashboard to monitor payments and withdraw earnings.
 
 Circle Gateway batches many signed offchain authorizations into a single onchain settlement, enabling economically viable sub-cent payments.
 
@@ -21,15 +21,14 @@ Circle Gateway batches many signed offchain authorizations into a single onchain
 - **Node.js v22+** — Install via [nvm](https://github.com/nvm-sh/nvm)
 - **Supabase CLI** — Install via `npm install -g supabase` or see [Supabase CLI docs](https://supabase.com/docs/guides/cli/getting-started)
 - **Docker Desktop** (only if using the local Supabase path) — [Install Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- *(Optional)* An **[OpenAI API key](https://platform.openai.com/api-keys)** — enables the LLM-driven payment agent. Without it, the agent runs in mock mode with scripted tool calls.
 
 ## Getting Started
 
 1. Clone the repository and install dependencies:
 
    ```bash
-   git clone https://github.com/akelani-circle/arc-nanopayments-demo.git
-   cd arc-nanopayments-demo
+   git clone https://github.com/circlefin/arc-nanopayments.git
+   cd arc-nanopayments
    npm install
    ```
 
@@ -87,19 +86,13 @@ Circle Gateway batches many signed offchain authorizations into a single onchain
 
    The app will be available at `http://localhost:3000`.
 
-6. Run the AI payment agent:
+6. Run the payment agent:
 
-   ```bash
    npm run agent
-   ```
 
-   The agent uses the buyer wallet to purchase resources from the x402-protected premium endpoints, paying with USDC on the Arc Testnet. If `OPENAI_API_KEY` is set, the agent uses the LLM to decide which tools to call; otherwise it falls back to a scripted mock run. You can optionally pass a custom query:
+The script generates an ephemeral wallet, funds it from your buyer wallet (BUYER_PRIVATE_KEY), deposits USDC into Circle Gateway, and then pays for the 4 x402-protected premium endpoints in a fixed round-robin loop at 1 request/second, using USDC on the Arc Testnet. It automatically tops up the Gateway deposit whenever the balance drops below 0.5 USDC.
 
-   ```bash
-   npm run agent -- "Buy me a quote at http://localhost:3000/api/premium/quote"
-   ```
-
-   To set a USDC spending limit, use the `--limit` flag. The agent will pause when the limit is reached and prompt for additional allowance:
+To set a USDC spending limit, use the --limit flag. The agent will pause when the limit is reached and prompt for additional allowance:
 
    ```bash
    npm run agent -- --limit 0.5
@@ -110,7 +103,7 @@ Circle Gateway batches many signed offchain authorizations into a single onchain
 - Built with [Next.js](https://nextjs.org/) App Router and [Supabase](https://supabase.com/)
 - Uses the [x402 protocol](https://www.x402.org/) for HTTP 402 nanopayments with USDC on the [Arc Network](https://arc.circle.com/)
 - Uses [Circle's x402 batching SDK](https://www.npmjs.com/package/@circle-fin/x402-batching) (`GatewayClient`) for gasless payment facilitation
-- Includes an AI payment agent built with [LangChain](https://js.langchain.com/) and [Deep Agents](https://www.npmjs.com/package/deepagents) that can check balances, deposit USDC into Gateway, verify endpoint support, and autonomously pay for x402-protected resources
+- Includes a scripted payment agent that funds an ephemeral wallet, deposits USDC into Gateway, and pays for x402-protected resources in a fixed round-robin loop at 1 request/second
 - Seller dashboard with real-time payment monitoring, Gateway balance display, and cross-chain withdrawal support
 - Payment events and withdrawals are persisted to Supabase with real-time subscriptions
 - Styled with [Tailwind CSS](https://tailwindcss.com) and components from [shadcn/ui](https://ui.shadcn.com/)
