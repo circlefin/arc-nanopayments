@@ -48,6 +48,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Optional shared-secret guard. When WITHDRAW_SECRET is set, callers must
+  // present it via the x-withdraw-secret header. This endpoint moves the
+  // seller's Gateway balance, so it must not be left open in production.
+  const withdrawSecret = process.env.WITHDRAW_SECRET;
+  if (withdrawSecret) {
+    const provided = req.headers.get("x-withdraw-secret");
+    if (provided !== withdrawSecret) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+  }
+
   const body = await req.json();
   const { amount, destinationChain, destinationAddress } = body as {
     amount: string;

@@ -185,3 +185,15 @@ This sample application:
 - Assumes testnet usage only
 - Handles secrets via environment variables
 - Is not intended for production use without modification
+
+### Protecting the withdraw endpoint
+
+`POST /api/gateway/withdraw` moves the seller's Gateway balance using
+`SELLER_PRIVATE_KEY` and accepts an arbitrary `destinationAddress`. Left open,
+anyone who can reach it can drain funds to their own wallet.
+
+Set `WITHDRAW_SECRET` in production. When it is set, every request must include
+a matching `x-withdraw-secret` header or it is rejected with `401 Unauthorized`.
+For a hosted seller dashboard, call this endpoint from a trusted server-to-server
+context rather than directly from the browser, so the secret is never shipped in
+the client bundle.
