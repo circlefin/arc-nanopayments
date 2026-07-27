@@ -18,6 +18,8 @@
 
 import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
 import { createClient } from "@supabase/supabase-js";
+import { trace } from "@usehaia/trace-x402";
+import { createRunWriter } from "@usehaia/trace-core/node";
 import { NextRequest, NextResponse } from "next/server";
 
 const ARC_TESTNET_NETWORK = "eip155:5042002";
@@ -39,12 +41,18 @@ const gateway = createGatewayMiddleware({
   facilitatorUrl: TESTNET_FACILITATOR_URL,
 });
 
-// --- Lifecycle hooks: the integration surface for Haia Trace (HAD-336 phase 4).
-// verify/settle spans attach here. For now they persist the settled payment and
-// log; swap the bodies for Haia Trace spans once its SDK lands.
-gateway.onBeforeVerify(async (ctx) => {
-  console.log(`[haia-trace] verify start ${ctx.requirements.network}`);
+const onTraceError = (err: unknown) =>
+  console.warn("[haia-trace] recorder error:", err);
+const traceAttestation = trace(gateway, {
+  writer: createRunWriter({ dir: ".trace/events", onError: onTraceError }),
+  onError: onTraceError,
 });
+if (!traceAttestation.complete) {
+  console.warn(
+    "[haia-trace] partial attach — not observing:",
+    traceAttestation.missing,
+  );
+}
 
 gateway.onAfterSettle(async (ctx) => {
   const { requirements, result } = ctx;
@@ -62,11 +70,10 @@ gateway.onAfterSettle(async (ctx) => {
   if (error) {
     console.error("Failed to record payment event:", error.message);
   }
-  console.log(`[haia-trace] settled ${amountUsdc} USDC from ${payer}`);
 });
 
 gateway.onSettleFailure(async (ctx) => {
-  console.error(`[haia-trace] settle failed: ${ctx.error.message}`);
+  console.error(`Settle failed: ${ctx.error.message}`);
 });
 
 /**

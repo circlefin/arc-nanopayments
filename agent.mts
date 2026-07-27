@@ -1,4 +1,6 @@
 import { GatewayClient } from "@circle-fin/x402-batching/client";
+import { trace } from "@usehaia/trace-x402";
+import { createRunWriter } from "@usehaia/trace-core/node";
 import {
   createWalletClient,
   createPublicClient,
@@ -172,27 +174,18 @@ const gateway = new GatewayClient({
   rpcUrl: ARC_TESTNET_RPC,
 });
 
-// Buyer-side lifecycle hooks: the integration surface for Haia Trace (HAD-336
-// phase 4). The payment span attaches across these three; for now they log.
-gateway
-  .onBeforePaymentCreation(async (ctx) => {
-    const amount = Number(ctx.selectedRequirements.amount) / 1e6;
-    console.log(
-      `[haia-trace] paying ${amount} USDC for ${ctx.paymentRequired.resource?.url ?? "resource"}`,
-    );
-  })
-  .onAfterPaymentCreation(async (ctx) => {
-    console.log(
-      `[haia-trace] signed ${ctx.paymentPayload.resource?.url ?? "resource"}`,
-    );
-  })
-  .onPaymentResponse(async (ctx) => {
-    if (ctx.settleResponse?.transaction) {
-      console.log(
-        `[haia-trace] settled tx ${ctx.settleResponse.transaction.slice(0, 10)}...`,
-      );
-    }
-  });
+const onTraceError = (err: unknown) =>
+  console.warn("[haia-trace] recorder error:", err);
+const traceAttestation = trace(gateway, {
+  writer: createRunWriter({ dir: ".trace/events", onError: onTraceError }),
+  onError: onTraceError,
+});
+if (!traceAttestation.complete) {
+  console.warn(
+    "[haia-trace] partial attach — not observing:",
+    traceAttestation.missing,
+  );
+}
 
 let index = 0;
 let inFlight = 0;
