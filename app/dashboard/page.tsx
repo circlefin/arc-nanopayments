@@ -19,6 +19,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -101,7 +102,11 @@ function CopyableCell({
 
   return (
     <span className="inline-flex items-center gap-1.5">
-      {href ? (
+      {href?.startsWith("/") ? (
+        <Link href={href} className="hover:underline text-primary">
+          {label ?? value}
+        </Link>
+      ) : href ? (
         <a
           href={href}
           target="_blank"
@@ -351,11 +356,7 @@ export default function Dashboard() {
                           <CopyableCell
                             value={ev.gateway_tx}
                             label={shortenHash(ev.gateway_tx, 6)}
-                            href={
-                              ev.gateway_tx.startsWith("0x")
-                                ? `${EXPLORER_BASE}/tx/${ev.gateway_tx}`
-                                : undefined
-                            }
+                            href={`/dashboard/trace/${encodeURIComponent(ev.gateway_tx)}`}
                           />
                         ) : (
                           <span className="text-muted-foreground">—</span>
