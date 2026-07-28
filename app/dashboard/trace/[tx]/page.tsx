@@ -18,7 +18,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
@@ -156,6 +156,21 @@ function EventRow({ event, startMs }: { event: TraceEvent; startMs: number }) {
 }
 
 export default function TracePage() {
+  return (
+    <Suspense
+      fallback={
+        <p className="text-muted-foreground text-sm">
+          <Loader2 size={16} className="animate-spin inline mr-2" />
+          Loading trace...
+        </p>
+      }
+    >
+      <TraceView />
+    </Suspense>
+  );
+}
+
+function TraceView() {
   const { tx } = useParams<{ tx: string }>();
   const [events, setEvents] = useState<TraceEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
