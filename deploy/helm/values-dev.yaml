@@ -61,5 +61,14 @@ externalSecret:
     - extract:
         key: arc-dev-nanopayments
 
+# ── Trace log storage — a plain ReadWriteOnce PVC on the seller ────────────
+# Uses the cluster default StorageClass (standard-rwo / pd-balanced on GKE), so
+# there is nothing to provision by hand. ~$0.10/month for 1Gi. Note this makes
+# seller rollouts tear down before creating (maxSurge: 0), so each deploy has a
+# short outage — a ReadWriteOnce disk cannot attach to two pods at once.
+trace:
+  enabled: true
+  size: 1Gi
+
 # Keep registry/history churn low on dev.
 revisionHistoryLimit: 2

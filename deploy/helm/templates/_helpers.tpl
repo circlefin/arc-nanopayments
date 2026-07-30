@@ -99,6 +99,42 @@ Shared ExternalSecret / synced Secret name.
 {{- end -}}
 
 {{/*
+Name of the PVC holding the seller's .trace event log.
+*/}}
+{{- define "arc-nanopayments.traceClaimName" -}}
+{{- .Values.trace.existingClaim | default (printf "%s-trace" (include "arc-nanopayments.fullname" .)) -}}
+{{- end -}}
+
+{{/*
+Volume for the .trace event log. Empty when trace is disabled, so callers guard
+with `with (include ...)`.
+*/}}
+{{- define "arc-nanopayments.traceVolume" -}}
+{{- if .Values.trace.enabled -}}
+- name: trace
+  persistentVolumeClaim:
+    claimName: {{ include "arc-nanopayments.traceClaimName" . }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+volumeMount for the .trace event log. Empty when trace is disabled.
+
+The path is deliberately hardcoded, not a value: lib/x402.ts writes to the
+relative ".trace/events" and app/api/trace/[tx]/route.ts reads
+join(process.cwd(), ".trace", "events"), both resolved against the image's
+WORKDIR /app. Mounting anywhere else leaves the volume empty while the app keeps
+writing to the root-owned /app/.trace and failing open — a green deploy with a
+permanently blank trace page.
+*/}}
+{{- define "arc-nanopayments.traceVolumeMount" -}}
+{{- if .Values.trace.enabled -}}
+- name: trace
+  mountPath: /app/.trace
+{{- end -}}
+{{- end -}}
+
+{{/*
 Seller Service DNS name (in-cluster), used to derive the buyer's BASE_URL.
 */}}
 {{- define "arc-nanopayments.sellerBaseUrl" -}}

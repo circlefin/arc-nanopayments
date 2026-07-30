@@ -96,6 +96,44 @@ buyer:
     limits:
       memory: 256Mi
 
+# ---- trace: persistent storage for the seller's .trace event log ----
+# @usehaia/trace-x402 appends NDJSON run files under /app/.trace/events, and the
+# seller's /api/trace/<tx> route reads them back. Without a volume the image's
+# WORKDIR (/app) is root-owned, so the writer's mkdir fails as uid 1001 — and it
+# fails open, so tracing silently records nothing and the trace page stays empty.
+#
+# Mounted on the SELLER only. The buyer writes to its own container filesystem,
+# so buyer-side events (payment creation/response) are not visible to the trace
+# page; sharing one volume across both roles would need ReadWriteMany, which no
+# Compute Engine persistent disk supports.
+#
+# Requires seller.replicas: 1 — the volume is ReadWriteOnce, so a second replica
+# would hang on Multi-Attach. The chart fails rendering if you set both.
+# The mount point is NOT configurable: the app hardcodes /app/.trace (see
+# arc-nanopayments.traceVolumeMount).
+trace:
+  enabled: false
+  # -- Use an existing PVC instead of creating one. Empty = the chart creates
+  # "<fullname>-trace". Point this at an operator-managed PVC when the trace log
+  # must outlive the release (the chart-created one is deleted with it).
+  existingClaim: ""
+  # -- StorageClass for the created PVC. Empty = the cluster default, which on
+  # GKE is standard-rwo (pd-balanced, ~$0.10/GiB/month).
+  # WARNING: a PVC's storageClassName is immutable and its size can only grow.
+  # Changing either after the first deploy makes `helm upgrade` fail for the
+  # WHOLE release until someone deletes the PVC by hand — get these right first.
+  storageClassName: ""
+  # -- Size. Run files are small NDJSON; 1Gi is ~$0.10/month on standard-rwo.
+  # Note nothing prunes them: one file per pod start, and the API route reads
+  # every file on every request. Watch it if this runs for months.
+  size: 1Gi
+  # -- Chown the mount to uid 1001 via a root initContainer before the app starts.
+  # On by default because the alternative failure is silent: kubelet skips the
+  # fsGroup ownership change when the provisioned PV has no fsType, the writer
+  # then fails open, and you get a green deploy with an empty trace page. Set
+  # false only if you have confirmed the mount is writable without it.
+  fixOwnership: true
+
 httpRoute:
   # -- Expose the seller via a Gateway API HTTPRoute.
   enabled: true

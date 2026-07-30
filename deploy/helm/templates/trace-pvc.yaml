@@ -1,0 +1,24 @@
+{{- if and .Values.trace.enabled (not .Values.trace.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "arc-nanopayments.traceClaimName" . }}
+  labels:
+    {{- include "arc-nanopayments.componentLabels" (dict "ctx" . "component" "seller") | nindent 4 }}
+  # Deliberately NOT annotated helm.sh/resource-policy: keep. That would orphan
+  # the PVC from the release whenever trace.enabled flips to false, and Helm then
+  # refuses to re-adopt it on re-enable ("invalid ownership metadata"), wedging
+  # every later upgrade. The trade-off is that the trace log is deleted with the
+  # release — set trace.existingClaim to an operator-managed PVC if it must survive.
+spec:
+  accessModes:
+    # ReadWriteOnce: mounted by the seller only. No Compute Engine persistent
+    # disk supports ReadWriteMany, so the buyer cannot share this volume.
+    - ReadWriteOnce
+  {{- with .Values.trace.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ required "trace.size is required when trace.enabled" .Values.trace.size | quote }}
+{{- end }}

@@ -1,4 +1,7 @@
 {{- $component := "seller" -}}
+{{- if and .Values.trace.enabled (gt (int .Values.seller.replicas) 1) -}}
+{{- fail "trace.enabled requires seller.replicas: 1 — the trace volume is ReadWriteOnce, so a second replica on another node would hang forever in ContainerCreating with a Multi-Attach error. Scale out only with trace.enabled=false." -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,6 +16,18 @@ spec:
       {{- include "arc-nanopayments.componentSelectorLabels" (dict "ctx" . "component" $component) | nindent 6 }}
   strategy:
     type: RollingUpdate
+    {{- if .Values.trace.enabled }}
+    # The trace volume is ReadWriteOnce, so the replacement pod cannot attach the
+    # disk while the outgoing pod still holds it. maxSurge: 0 forces teardown
+    # before create — the same ordering as type: Recreate, but staying on
+    # RollingUpdate avoids orphaning the API-server-defaulted rollingUpdate block
+    # on an already-deployed Deployment (a switch to Recreate leaves it in place
+    # and the API server then rejects the patch as invalid).
+    # With one replica on a RWO disk this teardown window is unavoidable downtime.
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    {{- end }}
   template:
     metadata:
       labels:
@@ -32,6 +47,29 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if and .Values.trace.enabled .Values.trace.fixOwnership }}
+      initContainers:
+        # podSecurityContext.fsGroup alone is not enough: pd.csi.storage.gke.io
+        # declares fsGroupPolicy ReadWriteOnceWithFSType, so kubelet skips the
+        # ownership change whenever the provisioned PV has no fsType set. The
+        # mount then lands root:root 0755, the trace writer's mkdir fails EACCES,
+        # and because the writer fails open the pod still goes Ready and the
+        # deploy still goes green — the trace page is just silently empty forever.
+        # One chown removes that whole failure mode.
+        - name: fix-trace-ownership
+          image: {{ include "arc-nanopayments.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["chown", "-R", "1001:1001", "/app/.trace"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            {{- include "arc-nanopayments.traceVolumeMount" . | nindent 12 }}
+      {{- end }}
       containers:
         - name: {{ $component }}
           image: {{ include "arc-nanopayments.image" . | quote }}
@@ -64,6 +102,14 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.seller.resources | nindent 12 }}
+          {{- with (include "arc-nanopayments.traceVolumeMount" .) }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
+      {{- with (include "arc-nanopayments.traceVolume" .) }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

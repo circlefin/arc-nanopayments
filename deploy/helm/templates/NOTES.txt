@@ -16,6 +16,32 @@ Seller exposed via Gateway API HTTPRoute {{ include "arc-nanopayments.fullname" 
   Point DNS for the hostname(s) above at the Gateway's address.
 {{- end }}
 
+{{- if .Values.trace.enabled }}
+
+Trace log persisted on the seller:
+{{- if .Values.trace.existingClaim }}
+  Using the existing PVC {{ .Values.trace.existingClaim }}, mounted at /app/.trace.
+  The chart neither created nor sized it and does not manage its lifecycle.
+{{- else }}
+  PVC {{ include "arc-nanopayments.traceClaimName" . }} ({{ .Values.trace.size }}, ReadWriteOnce) mounted at /app/.trace
+  Owned by this release — `helm uninstall` DELETES it and the trace log with it.
+  Set trace.existingClaim to an operator-managed PVC if the log must survive.
+{{- end }}
+  Rollouts use maxSurge: 0, so the old pod is torn down before the replacement
+  starts (a ReadWriteOnce disk cannot attach to both at once). Expect a short
+  seller outage on every deploy while trace is enabled.
+  Requires seller.replicas: 1.
+
+  Check it is bound and writable by the app user (uid 1001):
+    kubectl -n {{ .Release.Namespace }} get pvc {{ include "arc-nanopayments.traceClaimName" . }}
+    kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "arc-nanopayments.fullname" . }}-seller -c seller -- \
+      sh -c 'id; ls -ld /app/.trace; ls /app/.trace/events'
+
+  Only SELLER-side events (verify/settle) are recorded. The buyer writes to its
+  own container filesystem, so its events do not appear on the trace page —
+  sharing one volume needs ReadWriteMany, which Compute Engine disks lack.
+{{- end }}
+
 Prerequisites this chart does NOT create — set these up once:
 {{- if .Values.image.pullSecrets }}
 
