@@ -37,6 +37,15 @@ Trace log persisted on the seller:
     kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "arc-nanopayments.fullname" . }}-seller -c seller -- \
       sh -c 'id; ls -ld /app/.trace; ls /app/.trace/events'
 
+  The haia-trace CLI ships in the image and is on PATH. Build receipts from the
+  recorded runs — use x402-seller, since only server-side events are captured:
+    kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "arc-nanopayments.fullname" . }}-seller -c seller -- \
+      haia-trace build --template x402-seller
+    kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "arc-nanopayments.fullname" . }}-seller -c seller -- \
+      haia-trace receipt list
+  It reads .trace/events and writes .trace/receipts on this same volume, so the
+  receipts persist across restarts. Add --all to rebuild every run, not the latest.
+
   Only SELLER-side events (verify/settle) are recorded. The buyer writes to its
   own container filesystem, so its events do not appear on the trace page —
   sharing one volume needs ReadWriteMany, which Compute Engine disks lack.

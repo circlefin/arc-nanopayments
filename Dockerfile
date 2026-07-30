@@ -65,6 +65,13 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/agent.mts ./agent.mts
 
+# @usehaia/trace-cli is a runtime dependency, so npm already linked its `haia-trace`
+# bin into node_modules/.bin. Putting that on PATH makes it callable by name:
+#   kubectl exec deploy/<release>-seller -c seller -- haia-trace build --template x402-seller
+# It reads .trace/events and writes .trace/receipts, both on the mounted volume,
+# and WORKDIR is /app — so the default `.trace` root resolves to the PVC.
+ENV PATH="/app/node_modules/.bin:$PATH"
+
 USER nextjs
 EXPOSE 3000
 
