@@ -1,7 +1,7 @@
 import { GatewayClient } from "@circle-fin/x402-batching/client";
 import { trace } from "@usehaia/trace-x402";
 import { createMulticastWriter } from "@usehaia/trace-core";
-import { createCpWriter } from "@usehaia/trace-core/cp";
+import { createCpWriter, type CpWriter } from "@usehaia/trace-core/cp";
 import { createRunWriter, runIdFromPath } from "@usehaia/trace-core/node";
 import {
   createWalletClient,
@@ -189,19 +189,28 @@ const traceRunWriter = createRunWriter(".trace/events", {
 // record the run locally rather than fail on one.
 const HAIA_INGEST_URL = process.env.HAIA_INGEST_URL;
 const HAIA_INGEST_KEY = process.env.HAIA_INGEST_KEY;
-const traceCpWriter =
-  HAIA_INGEST_URL && HAIA_INGEST_KEY
-    ? createCpWriter({
-        url: HAIA_INGEST_URL,
-        apiKey: HAIA_INGEST_KEY,
-        // Who the uploaded events belong to. Deliberately the *role*, not the
-        // ephemeral wallet: a new wallet per run would land every restart as a
-        // different subject in the Control Plane.
-        agentId: "arc-nanopayments-buyer",
-        runId: runIdFromPath(traceRunWriter.path),
-        onError: onTraceError,
-      })
-    : null;
+
+// `createCpWriter` validates eagerly and throws on a wiring bug — a URL without
+// a scheme, a blank key. Caught rather than avoided: the throw is the SDK being
+// honest, but a typo in the shared ConfigMap must not stop the agent from paying
+// and from recording the run locally.
+let traceCpWriter: CpWriter | null = null;
+if (HAIA_INGEST_URL && HAIA_INGEST_KEY) {
+  try {
+    traceCpWriter = createCpWriter({
+      url: HAIA_INGEST_URL,
+      apiKey: HAIA_INGEST_KEY,
+      // Who the uploaded events belong to. Deliberately the *role*, not the
+      // ephemeral wallet: a new wallet per run would land every restart as a
+      // different subject in the Control Plane.
+      agentId: "arc-nanopayments-buyer",
+      runId: runIdFromPath(traceRunWriter.path),
+      onError: onTraceError,
+    });
+  } catch (err) {
+    onTraceError(err);
+  }
+}
 
 const traceAttestation = trace(gateway, {
   // Both sinks compose into one writer; the Gateway client never learns there
@@ -222,10 +231,24 @@ if (!traceAttestation.complete) {
 // Control Plane delivery is batched, so a SIGTERM (a pod rollout) would
 // otherwise drop whatever is still queued. The local run file needs none of
 // this — its writes are already on disk.
+//
+// Bounded, because `flush` carries its own retries and per-request timeouts:
+// against an unreachable Control Plane a single batch can take ~30s, which
+// outlasts the pod's default 30s termination grace period and turns a clean
+// stop into a SIGKILL. Losing the tail of a trace beats stalling a rollout.
+const SHUTDOWN_FLUSH_MS = 5_000;
 if (traceCpWriter) {
+  const cpWriter = traceCpWriter;
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
-      traceCpWriter.flush().finally(() => process.exit(0));
+      const deadline = new Promise<void>((resolve) => {
+        setTimeout(resolve, SHUTDOWN_FLUSH_MS).unref();
+      });
+      // `.catch` before the race: `flush` is documented never to reject, but an
+      // unhandled rejection would kill the process before it reached exit(0).
+      Promise.race([cpWriter.flush().catch(onTraceError), deadline]).finally(
+        () => process.exit(0),
+      );
     });
   }
 }

@@ -84,6 +84,9 @@ jobs:
       # The Haia Control Plane ingest endpoint + publishable token are public
       # runtime config, so they live in .env.ci next to the build-time values
       # rather than in GCP Secret Manager. Both roles read them from the ConfigMap.
+      # $GITHUB_ENV exports them into later steps' shells, so the helm call below
+      # reads them as quoted shell variables rather than interpolating the values
+      # into the command line, where a space or a ';' would split it.
       - name: Load runtime env from .env.ci
         run: grep -E '^[A-Z].*=' .env.ci >> "$GITHUB_ENV"
 
@@ -96,7 +99,7 @@ jobs:
             -f deploy/helm/values-dev.yaml \
             --set deployRevision=${{ github.sha }} \
             --set httpRoute.hostnames[0]=${{ vars.DEV_HOST }} \
-            --set-string config.HAIA_INGEST_URL=${{ env.HAIA_INGEST_URL }} \
-            --set-string config.HAIA_INGEST_KEY=${{ env.HAIA_INGEST_KEY }} \
+            --set-string config.HAIA_INGEST_URL="$HAIA_INGEST_URL" \
+            --set-string config.HAIA_INGEST_KEY="$HAIA_INGEST_KEY" \
             -n ${{ vars.DEPLOY_NAMESPACE }} \
             --wait --timeout 10m

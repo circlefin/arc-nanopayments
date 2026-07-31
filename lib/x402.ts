@@ -20,7 +20,7 @@ import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
 import { createClient } from "@supabase/supabase-js";
 import { trace } from "@usehaia/trace-x402";
 import { createMulticastWriter } from "@usehaia/trace-core";
-import { createCpWriter } from "@usehaia/trace-core/cp";
+import { createCpWriter, type CpWriter } from "@usehaia/trace-core/cp";
 import { createRunWriter, runIdFromPath } from "@usehaia/trace-core/node";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -56,19 +56,31 @@ const traceRunWriter = createRunWriter(".trace/events", {
 // record the run locally rather than fail on one.
 const HAIA_INGEST_URL = process.env.HAIA_INGEST_URL;
 const HAIA_INGEST_KEY = process.env.HAIA_INGEST_KEY;
-const traceCpWriter =
-  HAIA_INGEST_URL && HAIA_INGEST_KEY
-    ? createCpWriter({
-        url: HAIA_INGEST_URL,
-        apiKey: HAIA_INGEST_KEY,
-        // Who the uploaded events belong to. Hardcoded per role rather than
-        // read from the env: both pods share one ConfigMap, so a single
-        // variable would collapse the seller and the buyer into one subject.
-        agentId: "arc-nanopayments-seller",
-        runId: runIdFromPath(traceRunWriter.path),
-        onError: onTraceError,
-      })
-    : null;
+
+// `createCpWriter` validates eagerly and throws on a wiring bug — a URL without
+// a scheme, a blank key. That throw is the SDK being honest rather than handing
+// back a sink that looks alive and delivers nothing, so it is caught here rather
+// than avoided: this runs at module scope of the module every paywalled route
+// imports, and an uncaught throw would 500 the whole premium API over a typo in
+// the ConfigMap — while the pod still passed its "/" probe and the deploy still
+// went green. The mirror is optional; serving paid requests is not.
+let traceCpWriter: CpWriter | null = null;
+if (HAIA_INGEST_URL && HAIA_INGEST_KEY) {
+  try {
+    traceCpWriter = createCpWriter({
+      url: HAIA_INGEST_URL,
+      apiKey: HAIA_INGEST_KEY,
+      // Who the uploaded events belong to. Hardcoded per role rather than
+      // read from the env: both pods share one ConfigMap, so a single
+      // variable would collapse the seller and the buyer into one subject.
+      agentId: "arc-nanopayments-seller",
+      runId: runIdFromPath(traceRunWriter.path),
+      onError: onTraceError,
+    });
+  } catch (err) {
+    onTraceError(err);
+  }
+}
 
 const traceAttestation = trace(gateway, {
   // Both sinks compose into one writer; the middleware never learns there is
