@@ -19,7 +19,9 @@
 import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
 import { createClient } from "@supabase/supabase-js";
 import { trace } from "@usehaia/trace-x402";
-import { createRunWriter } from "@usehaia/trace-core/node";
+import { createMulticastWriter } from "@usehaia/trace-core";
+import { createCpWriter } from "@usehaia/trace-core/cp";
+import { createRunWriter, runIdFromPath } from "@usehaia/trace-core/node";
 import { NextRequest, NextResponse } from "next/server";
 
 const ARC_TESTNET_NETWORK = "eip155:5042002";
@@ -43,8 +45,37 @@ const gateway = createGatewayMiddleware({
 
 const onTraceError = (err: unknown) =>
   console.warn("[haia-trace] recorder error:", err);
+
+// The local run file stays the source of truth — /api/trace/<tx> reads it back.
+const traceRunWriter = createRunWriter(".trace/events", {
+  onError: onTraceError,
+});
+
+// Mirroring to a Haia Control Plane project is opt-in and off unless both
+// variables are set: half a configuration is a typo, and the demo should still
+// record the run locally rather than fail on one.
+const HAIA_INGEST_URL = process.env.HAIA_INGEST_URL;
+const HAIA_INGEST_KEY = process.env.HAIA_INGEST_KEY;
+const traceCpWriter =
+  HAIA_INGEST_URL && HAIA_INGEST_KEY
+    ? createCpWriter({
+        url: HAIA_INGEST_URL,
+        apiKey: HAIA_INGEST_KEY,
+        // Who the uploaded events belong to. Hardcoded per role rather than
+        // read from the env: both pods share one ConfigMap, so a single
+        // variable would collapse the seller and the buyer into one subject.
+        agentId: "arc-nanopayments-seller",
+        runId: runIdFromPath(traceRunWriter.path),
+        onError: onTraceError,
+      })
+    : null;
+
 const traceAttestation = trace(gateway, {
-  writer: createRunWriter({ dir: ".trace/events", onError: onTraceError }),
+  // Both sinks compose into one writer; the middleware never learns there is
+  // more than one.
+  writer: traceCpWriter
+    ? createMulticastWriter(traceRunWriter, traceCpWriter)
+    : traceRunWriter,
   onError: onTraceError,
 });
 if (!traceAttestation.complete) {

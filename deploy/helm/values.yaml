@@ -66,6 +66,13 @@ config:
   # Buyer knobs (agent.mts).
   DEPOSIT_AMOUNT: "1"
   PAYMENT_INTERVAL_MS: "600000"
+  # Haia Control Plane ingest, read by both roles. Set BOTH to mirror Haia Trace
+  # events to a Control Plane project on top of the local .trace run file; leave
+  # either empty and only the local file is written. The token is a publishable
+  # ingest token (pit_*), public by design — CI passes the demo project's values
+  # from .env.ci, so these stay empty here.
+  HAIA_INGEST_URL: ""
+  HAIA_INGEST_KEY: ""
 
 # ---- seller: the Next.js app (node server.js) ----
 seller:

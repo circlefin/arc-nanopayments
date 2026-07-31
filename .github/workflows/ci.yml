@@ -35,7 +35,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Load committed, public build-time values (NEXT_PUBLIC_*) into the job env.
+      # Load the committed, public values (NEXT_PUBLIC_*) into the job env.
       # .dockerignore strips .env.ci from the build context, so we feed it as
       # build-args here rather than COPYing it inside the Dockerfile.
       - name: Load build-time env from .env.ci
@@ -81,6 +81,12 @@ jobs:
         with:
           version: v4.2.0
 
+      # The Haia Control Plane ingest endpoint + publishable token are public
+      # runtime config, so they live in .env.ci next to the build-time values
+      # rather than in GCP Secret Manager. Both roles read them from the ConfigMap.
+      - name: Load runtime env from .env.ci
+        run: grep -E '^[A-Z].*=' .env.ci >> "$GITHUB_ENV"
+
       # Deploy :latest (per values-dev.yaml). deployRevision changes the pod
       # spec each commit so Helm rolls the pods; with pullPolicy: Always the
       # rollout then pulls the freshly pushed :latest image.
@@ -90,5 +96,7 @@ jobs:
             -f deploy/helm/values-dev.yaml \
             --set deployRevision=${{ github.sha }} \
             --set httpRoute.hostnames[0]=${{ vars.DEV_HOST }} \
+            --set-string config.HAIA_INGEST_URL=${{ env.HAIA_INGEST_URL }} \
+            --set-string config.HAIA_INGEST_KEY=${{ env.HAIA_INGEST_KEY }} \
             -n ${{ vars.DEPLOY_NAMESPACE }} \
             --wait --timeout 10m

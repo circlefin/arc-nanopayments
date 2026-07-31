@@ -32,6 +32,10 @@ config:
   SELLER_ADDRESS: "0x4c40F215A209F873aCd89226f40c1Db1A1B6553d"
   # Payment cadence: 10 min (600000 ms).
   PAYMENT_INTERVAL_MS: "600000"
+  # HAIA_INGEST_URL / HAIA_INGEST_KEY (Haia Control Plane) are injected by CI
+  # from .env.ci — public values, kept in one place rather than duplicated here.
+  # For a manual install pass them yourself:
+  #   --set-string config.HAIA_INGEST_URL=... --set-string config.HAIA_INGEST_KEY=...
 
 # ── Routing — GKE Gateway API ──────────────────────────────────────────────
 httpRoute:

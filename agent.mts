@@ -1,6 +1,8 @@
 import { GatewayClient } from "@circle-fin/x402-batching/client";
 import { trace } from "@usehaia/trace-x402";
-import { createRunWriter } from "@usehaia/trace-core/node";
+import { createMulticastWriter } from "@usehaia/trace-core";
+import { createCpWriter } from "@usehaia/trace-core/cp";
+import { createRunWriter, runIdFromPath } from "@usehaia/trace-core/node";
 import {
   createWalletClient,
   createPublicClient,
@@ -176,15 +178,56 @@ const gateway = new GatewayClient({
 
 const onTraceError = (err: unknown) =>
   console.warn("[haia-trace] recorder error:", err);
-const traceAttestation = trace(gateway, {
-  writer: createRunWriter({ dir: ".trace/events", onError: onTraceError }),
+
+// The local run file stays the source of truth `haia-trace build` assembles from.
+const traceRunWriter = createRunWriter(".trace/events", {
   onError: onTraceError,
 });
+
+// Mirroring to a Haia Control Plane project is opt-in and off unless both
+// variables are set: half a configuration is a typo, and the agent should still
+// record the run locally rather than fail on one.
+const HAIA_INGEST_URL = process.env.HAIA_INGEST_URL;
+const HAIA_INGEST_KEY = process.env.HAIA_INGEST_KEY;
+const traceCpWriter =
+  HAIA_INGEST_URL && HAIA_INGEST_KEY
+    ? createCpWriter({
+        url: HAIA_INGEST_URL,
+        apiKey: HAIA_INGEST_KEY,
+        // Who the uploaded events belong to. Deliberately the *role*, not the
+        // ephemeral wallet: a new wallet per run would land every restart as a
+        // different subject in the Control Plane.
+        agentId: "arc-nanopayments-buyer",
+        runId: runIdFromPath(traceRunWriter.path),
+        onError: onTraceError,
+      })
+    : null;
+
+const traceAttestation = trace(gateway, {
+  // Both sinks compose into one writer; the Gateway client never learns there
+  // is more than one.
+  writer: traceCpWriter
+    ? createMulticastWriter(traceRunWriter, traceCpWriter)
+    : traceRunWriter,
+  onError: onTraceError,
+});
+
 if (!traceAttestation.complete) {
   console.warn(
     "[haia-trace] partial attach — not observing:",
     traceAttestation.missing,
   );
+}
+
+// Control Plane delivery is batched, so a SIGTERM (a pod rollout) would
+// otherwise drop whatever is still queued. The local run file needs none of
+// this — its writes are already on disk.
+if (traceCpWriter) {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      traceCpWriter.flush().finally(() => process.exit(0));
+    });
+  }
 }
 
 let index = 0;
