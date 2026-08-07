@@ -52,7 +52,10 @@ function buildPaymentRequirements(price: string) {
     asset: ARC_TESTNET_USDC,
     amount: amount.toString(),
     payTo: sellerAddress,
-    maxTimeoutSeconds: 345600,
+    // Circle's facilitator requires burn-intent authorizations valid for at
+    // least 7 days; the extra 100s covers time elapsed between client signing
+    // and facilitator verification.
+    maxTimeoutSeconds: 7 * 24 * 60 * 60 + 100,
     extra: {
       name: "GatewayWalletBatched",
       version: "1",
@@ -114,6 +117,9 @@ export function withGateway(
       );
 
       if (!verifyResult.isValid) {
+        console.error(
+          `[x402] Verification failed for ${endpoint}: ${verifyResult.invalidReason}`,
+        );
         return NextResponse.json(
           {
             error: "Payment verification failed",
