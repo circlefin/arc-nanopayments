@@ -49,8 +49,11 @@ export function TopBarGatewayControls() {
         balancesRef.current = next;
         setBalances(next);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to fetch gateway balance:", err);
+      toast.error("Failed to load gateway balance", {
+        description: err instanceof Error ? err.message : "Network error",
+      });
     } finally {
       setLoading(false);
     }
