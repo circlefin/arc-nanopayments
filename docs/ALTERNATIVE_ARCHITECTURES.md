@@ -59,4 +59,48 @@
   signed session vouchers. Worth comparing if you're deciding between "use
   Circle's Gateway" vs. "run your own settlement batching" for an agent-to-agent
   payments use case.
-  
+
+  ## MachineWallet's model (spender-side policy wallet, direct settlement)
+
+  The models above optimize the **seller-side settlement path**. A further
+  variant from the same reference repo addresses the other half of the
+  machine-economy problem: bounding what an autonomous buyer's hot key can
+  spend. On Arc, gas is sub-cent USDC and finality is sub-second (measured
+  ~1 s end-to-end with viem `pollingInterval: 200`, best 547 ms across 19
+  consecutive settlements), so paying per micropayment directly on-chain is
+  viable at moderate tick rates — the binding risk is not gas cost but a
+  compromised or runaway device key.
+
+  Reference implementation:
+  [`contracts/src/MachineWallet.sol`](https://github.com/osr21/arc-stablecoin-dapp/blob/machine-economy/contracts/src/MachineWallet.sol)
+  and the keeper/simulator
+  [`artifacts/api-server/src/lib/machine-sim.ts`](https://github.com/osr21/arc-stablecoin-dapp/blob/machine-economy/artifacts/api-server/src/lib/machine-sim.ts),
+  deployed on Arc Testnet at `0xb5E319f40E39F1b212AA2f6982e848066eB655Fb`.
+
+  - The owner deploys a `MachineWallet` contract holding the device's USDC
+    budget. The device key is a separate role whose only entrypoint is the
+    payment function — it has no withdrawal or configuration path.
+  - Policy is enforced **on-chain, not in the server**: payee allowlist,
+    per-payment cap, cumulative cap per fixed (tumbling) time window, max
+    unit price, and an owner-only kill switch (`setPaused`).
+  - Worst case on device-key compromise: the attacker can pay only
+    allowlisted payees, at most the per-payment cap per call and the window
+    cap per window, until the owner pauses. Funds cannot be withdrawn or
+    redirected.
+  - Rejections surface as decoded custom errors via `simulateContract`
+    before any gas is spent, so a tripped policy (or the kill switch) costs
+    the device nothing.
+
+  | | Gateway x402 batching | Vault + voucher | MachineWallet policy wallet |
+  |---|---|---|---|
+  | Optimizes for | Seller settlement cost | Seller settlement cost | Buyer spend containment |
+  | Per-request cost | Verify/settle round trip | Zero (off-chain meter) | One on-chain transfer (sub-cent gas) |
+  | Key at risk | Seller server key | Operator relay key | Device key (bounded by on-chain policy) |
+  | Best fit | Pay-per-call APIs | Sustained metered sessions | Autonomous device/agent buyers |
+
+  These are composable rather than competing: a machine buyer can hold funds
+  behind a MachineWallet-style policy while paying a seller that settles via
+  any of the models above. The on-chain spend policy also bounds the blast
+  radius of any server-side key compromise of the kind reported in issue
+  [#29](https://github.com/circlefin/arc-nanopayments/issues/29) — even a
+  fully compromised caller cannot exceed the allowlist and caps.
