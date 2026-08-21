@@ -22,14 +22,14 @@ const generateWallet = (label: string) => {
   const account = privateKeyToAccount(privateKey);
   console.log(`\n${bold(label)}`);
   console.log(`  ${dim("Address:")}     ${cyan(account.address)}`);
-  console.log(`  ${dim("Private key:")} ${cyan(privateKey)}`);
+  console.log(`  Private key: stored in ${envPath}`);
   return { address: account.address, privateKey };
 };
 
 // --- Seller (platform operator) ---
 const seller = generateWallet("Seller (platform operator)");
 
-// --- Buyer (funder wallet — agents spawn ephemeral wallets from this) ---
+// --- Buyer (funder wallet; agents spawn ephemeral wallets from this) ---
 const buyer = generateWallet("Buyer (funder wallet)");
 
 // --- Write to .env.local ---
@@ -51,7 +51,8 @@ for (const [key, value] of Object.entries(lines)) {
     : line;
 }
 
-fs.writeFileSync(envPath, content.trimEnd() + "\n");
+fs.writeFileSync(envPath, content.trimEnd() + "\n", { encoding: "utf-8", mode: 0o600 });
+fs.chmodSync(envPath, 0o600);
 console.log(`\n${green("Written to")} ${envPath}`);
 
 console.log(`

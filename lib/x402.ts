@@ -17,7 +17,10 @@
  */
 
 import { BatchFacilitatorClient } from "@circle-fin/x402-batching/server";
-import { createClient } from "@supabase/supabase-js";
+import {
+  createClient,
+  type SupabaseClient,
+} from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 
 // Arc Testnet contract addresses (from @circle-fin/x402-batching SDK)
@@ -25,14 +28,58 @@ const ARC_TESTNET_NETWORK = "eip155:5042002";
 const ARC_TESTNET_USDC = "0x3600000000000000000000000000000000000000";
 const ARC_TESTNET_GATEWAY_WALLET = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
 
+type PaymentEventInsert = {
+  endpoint: string;
+  payer: string;
+  amount_usdc: string;
+  network: string;
+  gateway_tx: string | null;
+  raw: Record<string, unknown>;
+};
+
+type PaymentDatabase = {
+  public: {
+    Tables: {
+      payment_events: {
+        Row: PaymentEventInsert & {
+          id: string;
+          created_at: string;
+        };
+        Insert: PaymentEventInsert;
+        Update: Partial<PaymentEventInsert>;
+        Relationships: [];
+      };
+    };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
+  };
+};
+
 export const sellerAddress = process.env.SELLER_ADDRESS as `0x${string}`;
 
 const facilitator = new BatchFacilitatorClient();
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+let supabaseClient: SupabaseClient<PaymentDatabase> | undefined;
+
+function getSupabaseClient(): SupabaseClient<PaymentDatabase> {
+  if (supabaseClient) {
+    return supabaseClient;
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set at runtime",
+    );
+  }
+
+  // Initialize the client only when a payment request needs persistence.
+  supabaseClient = createClient<PaymentDatabase>(supabaseUrl, serviceRoleKey);
+  return supabaseClient;
+}
 
 interface PaymentPayload {
   x402Version: number;
@@ -147,7 +194,7 @@ export function withGateway(
       ).toString();
       const payer = settleResult.payer ?? verifyResult.payer ?? "unknown";
 
-      const { error } = await supabase.from("payment_events").insert({
+      const { error } = await getSupabaseClient().from("payment_events").insert({
         endpoint,
         payer,
         amount_usdc: amountUsdc,

@@ -22,7 +22,10 @@ import {
   type SupportedChainName,
   GATEWAY_DOMAINS,
 } from "@circle-fin/x402-batching/client";
-import { createClient } from "@supabase/supabase-js";
+import {
+  createClient,
+  type SupabaseClient,
+} from "@supabase/supabase-js";
 
 const SUPPORTED_CHAIN_LABELS: Record<string, string> = {
   arcTestnet: "Arc Testnet",
@@ -34,10 +37,55 @@ const SUPPORTED_CHAIN_LABELS: Record<string, string> = {
   polygonAmoy: "Polygon Amoy",
 };
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+type WithdrawalStatus = "submitted" | "confirmed" | "failed";
+
+type WithdrawalInsert = {
+  amount_usdc: string;
+  destination_chain: string;
+  destination_address: string;
+  status: WithdrawalStatus;
+};
+
+type WithdrawalDatabase = {
+  public: {
+    Tables: {
+      withdrawals: {
+        Row: WithdrawalInsert & {
+          id: string;
+          tx_hash: string | null;
+          created_at: string;
+        };
+        Insert: WithdrawalInsert;
+        Update: Partial<WithdrawalInsert> & { tx_hash?: string | null };
+        Relationships: [];
+      };
+    };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
+  };
+};
+
+let supabaseClient: SupabaseClient<WithdrawalDatabase> | undefined;
+
+function getSupabaseClient(): SupabaseClient<WithdrawalDatabase> {
+  if (supabaseClient) {
+    return supabaseClient;
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set at runtime",
+    );
+  }
+
+  // Initialize the client only when a withdrawal request needs persistence.
+  supabaseClient = createClient<WithdrawalDatabase>(supabaseUrl, serviceRoleKey);
+  return supabaseClient;
+}
 
 export async function POST(req: NextRequest) {
   const privateKey = process.env.SELLER_PRIVATE_KEY;
@@ -48,21 +96,59 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = await req.json();
-  const { amount, destinationChain, destinationAddress } = body as {
-    amount: string;
-    destinationChain: string;
-    destinationAddress?: string;
-  };
-
-  if (!amount || !destinationChain) {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
     return NextResponse.json(
-      { error: "amount and destinationChain are required" },
+      { error: "Request body must be valid JSON" },
       { status: 400 },
     );
   }
 
-  if (!(destinationChain in GATEWAY_DOMAINS)) {
+  if (!body || typeof body !== "object") {
+    return NextResponse.json(
+      { error: "Request body must be a JSON object" },
+      { status: 400 },
+    );
+  }
+
+  const { amount, destinationChain, destinationAddress } = body as {
+    amount?: unknown;
+    destinationChain?: unknown;
+    destinationAddress?: unknown;
+  };
+
+  if (
+    typeof amount !== "string" ||
+    typeof destinationChain !== "string" ||
+    (destinationAddress !== undefined && typeof destinationAddress !== "string")
+  ) {
+    return NextResponse.json(
+      { error: "amount and destinationChain must be strings" },
+      { status: 400 },
+    );
+  }
+
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    return NextResponse.json(
+      { error: "amount must be a finite positive number" },
+      { status: 400 },
+    );
+  }
+
+  if (
+    destinationAddress !== undefined &&
+    !/^0x[a-fA-F0-9]{40}$/.test(destinationAddress)
+  ) {
+    return NextResponse.json(
+      { error: "destinationAddress must be a valid EVM address" },
+      { status: 400 },
+    );
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(GATEWAY_DOMAINS, destinationChain)) {
     return NextResponse.json(
       { error: `Unsupported chain: ${destinationChain}` },
       { status: 400 },
@@ -92,7 +178,7 @@ export async function POST(req: NextRequest) {
     }
 
     const availableUsdc = Number(balances.gateway.formattedAvailable);
-    if (availableUsdc < Number(amount)) {
+    if (availableUsdc < numericAmount) {
       return NextResponse.json(
         {
           error: `Insufficient gateway balance: ${balances.gateway.formattedAvailable} USDC available, tried to withdraw ${amount} USDC.`,
@@ -134,7 +220,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Insert a pending withdrawal record
-  const { data: withdrawal, error: insertError } = await supabase
+  const { data: withdrawalRecord, error: insertError } = await getSupabaseClient()
     .from("withdrawals")
     .insert({
       amount_usdc: amount,
@@ -145,12 +231,17 @@ export async function POST(req: NextRequest) {
     .select()
     .single();
 
-  if (insertError) {
+  if (insertError || !withdrawalRecord) {
     return NextResponse.json(
-      { error: "Failed to record withdrawal: " + insertError.message },
+      {
+        error: "Failed to record withdrawal" +
+          (insertError ? `: ${insertError.message}` : ""),
+      },
       { status: 500 },
     );
   }
+
+  const withdrawal = withdrawalRecord as WithdrawalDatabase["public"]["Tables"]["withdrawals"]["Row"];
 
   try {
     const result = await gateway.withdraw(amount, {
@@ -161,7 +252,7 @@ export async function POST(req: NextRequest) {
     });
 
     // Update the withdrawal record with the transaction hash
-    await supabase
+    await getSupabaseClient()
       .from("withdrawals")
       .update({ status: "confirmed", tx_hash: result.mintTxHash })
       .eq("id", withdrawal.id);
@@ -179,7 +270,7 @@ export async function POST(req: NextRequest) {
     const raw = error instanceof Error ? error.message : String(error);
 
     // Mark withdrawal as failed
-    await supabase
+    await getSupabaseClient()
       .from("withdrawals")
       .update({ status: "failed" })
       .eq("id", withdrawal.id);
