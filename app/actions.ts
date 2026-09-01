@@ -20,32 +20,79 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import {
+  SESSION_COOKIE,
+  constantTimeEqualStrings,
+  createSessionToken,
+  sessionCookieOptions,
+  sha256Hex,
+} from "@/lib/auth";
 
-const ADMIN_EMAIL = "admin@example.com";
-const ADMIN_PASSWORD = "123456";
+/**
+ * Generic failure message. Both the "unknown email" and "wrong password" paths
+ * return this same string so the response cannot be used to enumerate accounts.
+ */
+const INVALID_CREDENTIALS = "Invalid credentials";
 
 export async function login(formData: FormData) {
-  const email = formData.get("email") as string;
-  const password = formData.get("password") as string;
+  const email = formData.get("email");
+  const password = formData.get("password");
 
-  if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) {
-    return { error: "Invalid credentials" };
+  // Reject non-string form values instead of coercing them with `as string`,
+  // which previously let a `File` part reach the comparison logic.
+  if (typeof email !== "string" || typeof password !== "string") {
+    return { error: INVALID_CREDENTIALS };
+  }
+
+  // Credentials come from the environment. The previous build shipped the
+  // literals "admin@example.com" / "123456" in source, which meant every
+  // deployment of this app had publicly known operator credentials.
+  const expectedEmail = process.env.ADMIN_EMAIL;
+  const expectedPasswordHash = process.env.ADMIN_PASSWORD_SHA256;
+
+  if (!expectedEmail || !expectedPasswordHash) {
+    // Fail closed: an unconfigured deployment authenticates nobody.
+    console.error(
+      "ADMIN_EMAIL and ADMIN_PASSWORD_SHA256 must both be set; refusing to authenticate.",
+    );
+    return { error: INVALID_CREDENTIALS };
+  }
+
+  // Compare digests in constant time so response timing does not leak the
+  // credential prefix.
+  const emailMatches = constantTimeEqualStrings(
+    await sha256Hex(email.trim().toLowerCase()),
+    await sha256Hex(expectedEmail.trim().toLowerCase()),
+  );
+  const passwordMatches = constantTimeEqualStrings(
+    await sha256Hex(password),
+    expectedPasswordHash.trim().toLowerCase(),
+  );
+
+  if (!emailMatches || !passwordMatches) {
+    return { error: INVALID_CREDENTIALS };
+  }
+
+  let token: string;
+  try {
+    // Signed, expiring token — not the forgeable constant "authenticated".
+    token = await createSessionToken(expectedEmail);
+  } catch (error) {
+    console.error(
+      "Unable to issue session token:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return { error: "Server is not configured for sign-in." };
   }
 
   const cookieStore = await cookies();
-  cookieStore.set("session", "authenticated", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60 * 24, // 1 day
-  });
+  cookieStore.set(SESSION_COOKIE, token, sessionCookieOptions());
 
   redirect("/dashboard");
 }
 
 export async function logout() {
   const cookieStore = await cookies();
-  cookieStore.delete("session");
+  cookieStore.delete(SESSION_COOKIE);
   redirect("/");
 }

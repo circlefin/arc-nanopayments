@@ -42,9 +42,59 @@ interface PaymentPayload {
   extensions?: Record<string, unknown>;
 }
 
+/** USDC has 6 decimals. */
+const USDC_DECIMALS = 6;
+
+/**
+ * 10^6 as a bigint. Written with `BigInt(...)` rather than a `10n` literal
+ * because this project compiles with `target: "ES2017"`, under which BigInt
+ * literals are a type error.
+ */
+const USDC_SCALE = BigInt(10) ** BigInt(USDC_DECIMALS);
+const ZERO = BigInt(0);
+
+/** `$1.23`, `1.23`, `$0.005` — up to 6 decimal places, no exponent notation. */
+const PRICE_PATTERN = /^\$?(\d+)(?:\.(\d{1,6}))?$/;
+
+/**
+ * Converts a price string such as `"$0.03"` into USDC atomic units.
+ *
+ * The previous implementation used `Math.round(parseFloat(price) * 1_000_000)`,
+ * which routed a monetary value through binary floating point and silently
+ * produced `NaN` for a malformed price. This version parses the integer and
+ * fractional parts as digits, so the conversion is exact, and throws on input
+ * it cannot represent rather than emitting `"NaN"` as an on-chain amount.
+ *
+ * @throws if `price` is not a plain decimal amount with at most 6 decimals.
+ */
+export function priceToAtomicUnits(price: string): bigint {
+  const match = PRICE_PATTERN.exec(price.trim());
+  if (!match) {
+    throw new Error(
+      `Invalid price "${price}": expected a decimal amount with at most ${USDC_DECIMALS} decimal places.`,
+    );
+  }
+
+  const whole = match[1] ?? "0";
+  // Right-pad the fractional digits so "0.5" and "0.500000" agree.
+  const fraction = (match[2] ?? "").padEnd(USDC_DECIMALS, "0");
+  const atomic = BigInt(whole) * USDC_SCALE + BigInt(fraction);
+
+  if (atomic <= ZERO) {
+    throw new Error(`Invalid price "${price}": amount must be greater than zero.`);
+  }
+  return atomic;
+}
+
+/** Formats atomic USDC units back to a decimal string without floating point. */
+function formatAtomicUnits(atomic: bigint): string {
+  const whole = atomic / USDC_SCALE;
+  const fraction = (atomic % USDC_SCALE).toString().padStart(USDC_DECIMALS, "0");
+  return `${whole}.${fraction}`;
+}
+
 function buildPaymentRequirements(price: string) {
-  // Parse dollar amount to USDC atomic units (6 decimals)
-  const amount = Math.round(parseFloat(price.replace("$", "")) * 1_000_000);
+  const amount = priceToAtomicUnits(price);
 
   return {
     scheme: "exact" as const,
@@ -142,9 +192,7 @@ export function withGateway(
       }
 
       // Record payment event in Supabase
-      const amountUsdc = (
-        Number(requirements.amount) / 1e6
-      ).toString();
+      const amountUsdc = formatAtomicUnits(BigInt(requirements.amount));
       const payer = settleResult.payer ?? verifyResult.payer ?? "unknown";
 
       const { error } = await supabase.from("payment_events").insert({
@@ -164,8 +212,28 @@ export function withGateway(
         `[x402] Payment settled: ${endpoint} — ${amountUsdc} USDC from ${payer}`,
       );
 
-      // Call the actual route handler
-      const response = await handler(req);
+      // Settlement has already moved funds. A handler failure past this point is
+      // a *fulfilment* failure, not a payment failure, and must be reported and
+      // logged as such so the paid-but-unfulfilled call can be reconciled —
+      // previously it surfaced as a generic "Payment processing error".
+      let response: NextResponse;
+      try {
+        response = await handler(req);
+      } catch (handlerError) {
+        console.error(
+          `[x402] PAID BUT UNFULFILLED — endpoint=${endpoint} payer=${payer} amount=${amountUsdc} tx=${
+            settleResult.transaction ?? "unknown"
+          }:`,
+          handlerError instanceof Error ? handlerError.message : String(handlerError),
+        );
+        return NextResponse.json(
+          {
+            error: "Payment settled but the resource could not be produced",
+            transaction: settleResult.transaction ?? null,
+          },
+          { status: 500 },
+        );
+      }
 
       // Forward settlement info to the client
       const settleResponseHeader = Buffer.from(
@@ -182,9 +250,12 @@ export function withGateway(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error);
+      // Log the detail server-side, but do not echo internal error text back to
+      // the caller: these messages can carry facilitator internals and payload
+      // fragments.
       console.error("[x402] Payment processing error:", message);
       return NextResponse.json(
-        { error: "Payment processing error", message },
+        { error: "Payment processing error" },
         { status: 500 },
       );
     }

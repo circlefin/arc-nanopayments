@@ -23,6 +23,7 @@ import {
   GATEWAY_DOMAINS,
 } from "@circle-fin/x402-batching/client";
 import { createClient } from "@supabase/supabase-js";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
 
 const SUPPORTED_CHAIN_LABELS: Record<string, string> = {
   arcTestnet: "Arc Testnet",
@@ -34,12 +35,55 @@ const SUPPORTED_CHAIN_LABELS: Record<string, string> = {
   polygonAmoy: "Polygon Amoy",
 };
 
+/** Upper bound on a single withdrawal, in whole USDC. */
+const MAX_WITHDRAWAL_USDC = 10_000;
+
+/** USDC has 6 decimals; reject anything finer than that. */
+const USDC_AMOUNT_PATTERN = /^(?:0|[1-9]\d{0,9})(?:\.\d{1,6})?$/;
+
+/** EVM address shape, checked before the value is cast to `0x${string}`. */
+const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
+/**
+ * Validates a user-supplied USDC amount.
+ *
+ * The amount is kept as a decimal string and validated by pattern rather than
+ * parsed through `Number`, so no precision is lost before it reaches the SDK.
+ */
+function parseAmount(value: unknown): { amount: string } | { error: string } {
+  if (typeof value !== "string" || !USDC_AMOUNT_PATTERN.test(value.trim())) {
+    return {
+      error:
+        "amount must be a positive decimal string with at most 6 decimal places",
+    };
+  }
+
+  const amount = value.trim();
+  if (Number(amount) <= 0) {
+    return { error: "amount must be greater than zero" };
+  }
+  if (Number(amount) > MAX_WITHDRAWAL_USDC) {
+    return { error: `amount must not exceed ${MAX_WITHDRAWAL_USDC} USDC` };
+  }
+  return { amount };
+}
+
 export async function POST(req: NextRequest) {
+  // Defence in depth: `middleware.ts` already gates /api/gateway/*, but this
+  // handler moves funds, so it re-checks the operator session itself rather
+  // than trusting an upstream matcher to stay correct.
+  const session = await verifySessionToken(
+    req.cookies.get(SESSION_COOKIE)?.value,
+  );
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const privateKey = process.env.SELLER_PRIVATE_KEY;
   if (!privateKey) {
     return NextResponse.json(
@@ -48,23 +92,51 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = await req.json();
-  const { amount, destinationChain, destinationAddress } = body as {
-    amount: string;
-    destinationChain: string;
-    destinationAddress?: string;
-  };
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Malformed JSON body" }, { status: 400 });
+  }
 
-  if (!amount || !destinationChain) {
+  if (typeof body !== "object" || body === null) {
     return NextResponse.json(
-      { error: "amount and destinationChain are required" },
+      { error: "Request body must be a JSON object" },
       { status: 400 },
     );
   }
 
-  if (!(destinationChain in GATEWAY_DOMAINS)) {
+  const {
+    amount: rawAmount,
+    destinationChain,
+    destinationAddress,
+  } = body as Record<string, unknown>;
+
+  const parsedAmount = parseAmount(rawAmount);
+  if ("error" in parsedAmount) {
+    return NextResponse.json({ error: parsedAmount.error }, { status: 400 });
+  }
+  const amount = parsedAmount.amount;
+
+  if (
+    typeof destinationChain !== "string" ||
+    !Object.prototype.hasOwnProperty.call(GATEWAY_DOMAINS, destinationChain)
+  ) {
+    // `hasOwnProperty` rather than `in`, so inherited keys such as
+    // "constructor" or "toString" cannot pass the allowlist check.
     return NextResponse.json(
-      { error: `Unsupported chain: ${destinationChain}` },
+      { error: "Unsupported destination chain" },
+      { status: 400 },
+    );
+  }
+
+  if (
+    destinationAddress !== undefined &&
+    (typeof destinationAddress !== "string" ||
+      !EVM_ADDRESS_PATTERN.test(destinationAddress))
+  ) {
+    return NextResponse.json(
+      { error: "destinationAddress must be a 20-byte hex EVM address" },
       { status: 400 },
     );
   }
@@ -101,7 +173,17 @@ export async function POST(req: NextRequest) {
       );
     }
   } catch (balanceError) {
+    // Fail closed. Previously this branch only logged and then continued to the
+    // withdrawal, so an RPC/Gateway outage turned the "sufficient balance" and
+    // "sufficient gas" pre-checks into no-ops.
     console.error("Failed to check balances before withdraw:", balanceError);
+    return NextResponse.json(
+      {
+        error:
+          "Unable to verify seller balances before withdrawing. Please retry.",
+      },
+      { status: 503 },
+    );
   }
 
   // Pre-check: for cross-chain withdrawals, verify gas on the destination chain
@@ -126,9 +208,18 @@ export async function POST(req: NextRequest) {
         );
       }
     } catch (destBalanceError) {
+      // Fail closed for the same reason as the source-chain pre-check above:
+      // a failed lookup is not evidence that the destination chain is funded.
       console.error(
         "Failed to check destination chain gas balance:",
         destBalanceError,
+      );
+      return NextResponse.json(
+        {
+          error:
+            "Unable to verify destination chain gas balance. Please retry.",
+        },
+        { status: 503 },
       );
     }
   }
