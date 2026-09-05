@@ -19,11 +19,6 @@
 /**
  * Session issuing and verification for the operator dashboard.
  *
- * The previous implementation stored the constant string "authenticated" in the
- * `session` cookie and never verified it anywhere, so any caller could forge a
- * session by sending `Cookie: session=authenticated` — or simply call the API
- * routes directly, since nothing read the cookie at all.
- *
  * Tokens issued here are HMAC-SHA256 signed over a JSON payload and carry an
  * absolute expiry. Verification is constant-time and fails closed: a missing or
  * weak `SESSION_SECRET` makes verification impossible rather than permissive.
@@ -39,6 +34,9 @@ const SESSION_TTL_SECONDS = 60 * 60 * 8; // 8 hours
 
 /** Minimum entropy we are willing to accept for the signing secret. */
 const MIN_SECRET_LENGTH = 32;
+
+/** Exactly 64 hex characters (32 bytes) for a standard SHA-256 digest string. */
+const SHA256_HEX_PATTERN = /^[0-9a-fA-F]{64}$/;
 
 export interface SessionPayload {
   /** Subject — the authenticated operator identity. */
@@ -67,10 +65,6 @@ function base64UrlDecode(value: string): Uint8Array {
 
 /**
  * Resolves the signing secret, or `null` when it is absent or too weak.
- *
- * Returning `null` (rather than falling back to a default) is deliberate: an
- * unconfigured deployment must reject every session instead of accepting a
- * predictable signature.
  */
 function getSecret(): string | null {
   const secret = process.env.SESSION_SECRET;
@@ -98,7 +92,10 @@ async function sign(secret: string, data: string): Promise<Uint8Array> {
   return new Uint8Array(signature);
 }
 
-/** Length-independent, value-independent comparison of two byte strings. */
+/**
+ * Value-independent comparison of two fixed-length byte arrays.
+ * Fails closed if length invariants are violated.
+ */
 function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -106,9 +103,29 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-/** Constant-time comparison of two UTF-8 strings (e.g. credential digests). */
+/**
+ * Constant-time comparison of two hex-encoded SHA-256 digest strings.
+ *
+ * Mitigates timing side-channels caused by length mismatches or early short-circuiting:
+ * verifies both inputs match the strict 64-hex shape, and executes a dummy constant-time
+ * pass if either argument is malformed before returning false.
+ */
 export function constantTimeEqualStrings(a: string, b: string): boolean {
-  return timingSafeEqual(textEncoder.encode(a), textEncoder.encode(b));
+  const validA = typeof a === "string" && SHA256_HEX_PATTERN.test(a);
+  const validB = typeof b === "string" && SHA256_HEX_PATTERN.test(b);
+
+  if (!validA || !validB) {
+    // Perform a dummy constant-time pass against a fixed-size buffer to prevent timing leakage
+    const dummyA = new Uint8Array(32);
+    const dummyB = new Uint8Array(32);
+    timingSafeEqual(dummyA, dummyB);
+    return false;
+  }
+
+  return timingSafeEqual(
+    textEncoder.encode(a.toLowerCase()),
+    textEncoder.encode(b.toLowerCase()),
+  );
 }
 
 /** Hex-encoded SHA-256 digest, used to compare credentials without storing them in cleartext. */
