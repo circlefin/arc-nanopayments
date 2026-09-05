@@ -35,10 +35,14 @@ const SUPPORTED_CHAIN_LABELS: Record<string, string> = {
   polygonAmoy: "Polygon Amoy",
 };
 
-/** Upper bound on a single withdrawal, in whole USDC. */
-const MAX_WITHDRAWAL_USDC = 10_000;
+/** USDC uses 6 decimals. */
+const USDC_DECIMALS = 6;
+const USDC_SCALE = BigInt(10) ** BigInt(USDC_DECIMALS);
 
-/** USDC has 6 decimals; reject anything finer than that. */
+/** Upper bound on a single withdrawal in atomic micro-units (10,000 USDC). */
+const MAX_WITHDRAWAL_USDC_UNITS = BigInt(10_000) * USDC_SCALE;
+
+/** USDC has 6 decimals; reject anything finer or non-decimal. */
 const USDC_AMOUNT_PATTERN = /^(?:0|[1-9]\d{0,9})(?:\.\d{1,6})?$/;
 
 /** EVM address shape, checked before the value is cast to `0x${string}`. */
@@ -50,12 +54,25 @@ const supabase = createClient(
 );
 
 /**
- * Validates a user-supplied USDC amount.
- *
- * The amount is kept as a decimal string and validated by pattern rather than
- * parsed through `Number`, so no precision is lost before it reaches the SDK.
+ * Converts a validated decimal string to exact atomic units (micro-USDC).
  */
-function parseAmount(value: unknown): { amount: string } | { error: string } {
+function toMicroUnits(decimalStr: string): bigint {
+  const [whole, frac = ""] = decimalStr.split(".");
+  return (
+    BigInt(whole) * USDC_SCALE +
+    BigInt(frac.padEnd(USDC_DECIMALS, "0").slice(0, USDC_DECIMALS))
+  );
+}
+
+/**
+ * Validates a user-supplied USDC amount using exact integer parsing.
+ *
+ * Avoids precision loss and float truncation by maintaining the amount as an exact BigInt
+ * representation of atomic micro-USDC units throughout threshold comparisons.
+ */
+function parseAmount(
+  value: unknown,
+): { amount: string; units: bigint } | { error: string } {
   if (typeof value !== "string" || !USDC_AMOUNT_PATTERN.test(value.trim())) {
     return {
       error:
@@ -64,19 +81,19 @@ function parseAmount(value: unknown): { amount: string } | { error: string } {
   }
 
   const amount = value.trim();
-  if (Number(amount) <= 0) {
+  const units = toMicroUnits(amount);
+
+  if (units <= 0n) {
     return { error: "amount must be greater than zero" };
   }
-  if (Number(amount) > MAX_WITHDRAWAL_USDC) {
-    return { error: `amount must not exceed ${MAX_WITHDRAWAL_USDC} USDC` };
+  if (units > MAX_WITHDRAWAL_USDC_UNITS) {
+    return { error: "amount must not exceed 10000 USDC" };
   }
-  return { amount };
+  return { amount, units };
 }
 
 export async function POST(req: NextRequest) {
-  // Defence in depth: `middleware.ts` already gates /api/gateway/*, but this
-  // handler moves funds, so it re-checks the operator session itself rather
-  // than trusting an upstream matcher to stay correct.
+  // Defence in depth: verify operator session before moving any funds.
   const session = await verifySessionToken(
     req.cookies.get(SESSION_COOKIE)?.value,
   );
@@ -109,21 +126,19 @@ export async function POST(req: NextRequest) {
   const {
     amount: rawAmount,
     destinationChain,
-    destinationAddress,
+    destinationAddress: rawDestinationAddress,
   } = body as Record<string, unknown>;
 
   const parsedAmount = parseAmount(rawAmount);
   if ("error" in parsedAmount) {
     return NextResponse.json({ error: parsedAmount.error }, { status: 400 });
   }
-  const amount = parsedAmount.amount;
+  const { amount, units: withdrawalUnits } = parsedAmount;
 
   if (
     typeof destinationChain !== "string" ||
     !Object.prototype.hasOwnProperty.call(GATEWAY_DOMAINS, destinationChain)
   ) {
-    // `hasOwnProperty` rather than `in`, so inherited keys such as
-    // "constructor" or "toString" cannot pass the allowlist check.
     return NextResponse.json(
       { error: "Unsupported destination chain" },
       { status: 400 },
@@ -131,9 +146,9 @@ export async function POST(req: NextRequest) {
   }
 
   if (
-    destinationAddress !== undefined &&
-    (typeof destinationAddress !== "string" ||
-      !EVM_ADDRESS_PATTERN.test(destinationAddress))
+    rawDestinationAddress !== undefined &&
+    (typeof rawDestinationAddress !== "string" ||
+      !EVM_ADDRESS_PATTERN.test(rawDestinationAddress.trim()))
   ) {
     return NextResponse.json(
       { error: "destinationAddress must be a 20-byte hex EVM address" },
@@ -146,9 +161,23 @@ export async function POST(req: NextRequest) {
     privateKey: privateKey as `0x${string}`,
   });
 
+  // Explicit recipient semantics: omitting destinationAddress explicitly defaults
+  // to self-withdrawal to the seller's gateway address.
+  const destinationAddress =
+    typeof rawDestinationAddress === "string" && rawDestinationAddress.trim() !== ""
+      ? rawDestinationAddress.trim()
+      : gateway.address;
+
+  if (!EVM_ADDRESS_PATTERN.test(destinationAddress)) {
+    return NextResponse.json(
+      { error: "Resolved destination address is not a valid 20-byte hex EVM address" },
+      { status: 400 },
+    );
+  }
+
   const isCrossChain = destinationChain !== "arcTestnet";
 
-  // Pre-check: ensure the seller wallet has native tokens for gas on source chain
+  // Pre-check: ensure the seller wallet has native gas tokens and sufficient balance
   try {
     const balances = await gateway.getBalances();
     if (
@@ -163,8 +192,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const availableUsdc = Number(balances.gateway.formattedAvailable);
-    if (availableUsdc < Number(amount)) {
+    // Parse available balance into exact BigInt micro-units to prevent precision mismatch
+    const availableUnits = toMicroUnits(
+      balances.gateway.formattedAvailable ?? "0",
+    );
+    if (availableUnits < withdrawalUnits) {
       return NextResponse.json(
         {
           error: `Insufficient gateway balance: ${balances.gateway.formattedAvailable} USDC available, tried to withdraw ${amount} USDC.`,
@@ -173,9 +205,7 @@ export async function POST(req: NextRequest) {
       );
     }
   } catch (balanceError) {
-    // Fail closed. Previously this branch only logged and then continued to the
-    // withdrawal, so an RPC/Gateway outage turned the "sufficient balance" and
-    // "sufficient gas" pre-checks into no-ops.
+    // Fail closed: an RPC or gateway outage must abort the withdrawal process.
     console.error("Failed to check balances before withdraw:", balanceError);
     return NextResponse.json(
       {
@@ -186,7 +216,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Pre-check: for cross-chain withdrawals, verify gas on the destination chain
+  // Pre-check: for cross-chain withdrawals, verify gas availability on destination chain
   if (isCrossChain) {
     try {
       const destGateway = new GatewayClient({
@@ -208,8 +238,6 @@ export async function POST(req: NextRequest) {
         );
       }
     } catch (destBalanceError) {
-      // Fail closed for the same reason as the source-chain pre-check above:
-      // a failed lookup is not evidence that the destination chain is funded.
       console.error(
         "Failed to check destination chain gas balance:",
         destBalanceError,
@@ -224,13 +252,13 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Insert a pending withdrawal record
+  // Record pending withdrawal in database
   const { data: withdrawal, error: insertError } = await supabase
     .from("withdrawals")
     .insert({
       amount_usdc: amount,
       destination_chain: destinationChain,
-      destination_address: destinationAddress ?? gateway.address,
+      destination_address: destinationAddress,
       status: "submitted",
     })
     .select()
@@ -246,12 +274,9 @@ export async function POST(req: NextRequest) {
   try {
     const result = await gateway.withdraw(amount, {
       chain: destinationChain as SupportedChainName,
-      recipient: destinationAddress
-        ? (destinationAddress as `0x${string}`)
-        : undefined,
+      recipient: destinationAddress as `0x${string}`,
     });
 
-    // Update the withdrawal record with the transaction hash
     await supabase
       .from("withdrawals")
       .update({ status: "confirmed", tx_hash: result.mintTxHash })
@@ -269,13 +294,11 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
 
-    // Mark withdrawal as failed
     await supabase
       .from("withdrawals")
       .update({ status: "failed" })
       .eq("id", withdrawal.id);
 
-    // Translate common on-chain errors into user-friendly messages
     const chainLabel =
       SUPPORTED_CHAIN_LABELS[destinationChain] ?? destinationChain;
     let message = raw;
