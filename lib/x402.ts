@@ -61,11 +61,20 @@ function buildPaymentRequirements(price: string) {
   };
 }
 
+// Idempotency window: a repeated (endpoint, payer, idempotency-key) within this
+// window returns the original settlement result without settling again.
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Wraps a Next.js route handler with Circle Gateway payment verification.
  *
  * Follows fred-mvp's approach: manually constructs payment requirements with
  * the Gateway batching `extra` field and calls BatchFacilitatorClient directly.
+ *
+ * Clients may send an `Idempotency-Key` header to make retries safe: if the
+ * same key is presented again by the same payer for the same endpoint within
+ * the idempotency window, the prior settlement result is returned without a
+ * second `settle()` call.
  */
 export function withGateway(
   handler: (req: NextRequest) => Promise<NextResponse>,
@@ -123,6 +132,50 @@ export function withGateway(
         );
       }
 
+      const payer = verifyResult.payer ?? "unknown";
+      const idempotencyKey = req.headers.get("idempotency-key");
+
+      // Replay guard: if this (endpoint, payer, key) already settled within
+      // the idempotency window, return the original result without settling
+      // again. This protects callers that time out and re-issue the same
+      // logical request (each attempt carries a fresh payment signature, so
+      // signature-level nonce checks do not cover this case).
+      if (idempotencyKey) {
+        const since = new Date(Date.now() - IDEMPOTENCY_TTL_MS).toISOString();
+        const { data: prior, error: lookupError } = await supabase
+          .from("payment_events")
+          .select("gateway_tx, network, payer")
+          .eq("endpoint", endpoint)
+          .eq("payer", payer)
+          .eq("idempotency_key", idempotencyKey)
+          .gte("created_at", since)
+          .limit(1)
+          .maybeSingle();
+
+        if (lookupError) {
+          console.error(
+            "Idempotency lookup failed:",
+            lookupError.message,
+          );
+        } else if (prior) {
+          console.log(
+            `[x402] Idempotent replay for ${endpoint} — skipping settlement`,
+          );
+
+          const cachedResponse = await handler(req);
+          const cachedHeader = Buffer.from(
+            JSON.stringify({
+              success: true,
+              transaction: prior.gateway_tx,
+              network: prior.network,
+              payer: prior.payer,
+            }),
+          ).toString("base64");
+          cachedResponse.headers.set("PAYMENT-RESPONSE", cachedHeader);
+          return cachedResponse;
+        }
+      }
+
       const settleResult = await facilitator.settle(
         paymentPayload,
         requirements,
@@ -145,7 +198,6 @@ export function withGateway(
       const amountUsdc = (
         Number(requirements.amount) / 1e6
       ).toString();
-      const payer = settleResult.payer ?? verifyResult.payer ?? "unknown";
 
       const { error } = await supabase.from("payment_events").insert({
         endpoint,
@@ -153,6 +205,7 @@ export function withGateway(
         amount_usdc: amountUsdc,
         network: requirements.network,
         gateway_tx: settleResult.transaction ?? null,
+        idempotency_key: idempotencyKey,
         raw: { requirements, settleResult },
       });
 
