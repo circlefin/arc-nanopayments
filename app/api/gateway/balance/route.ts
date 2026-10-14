@@ -21,7 +21,7 @@ import { createPublicClient, http, formatUnits, erc20Abi } from "viem";
 
 const GATEWAY_API = "https://gateway-api-testnet.circle.com/v1/balances";
 const ARC_TESTNET_DOMAIN = 26;
-const ARC_TESTNET_RPC = "https://rpc.testnet.arc.network";
+const ARC_TESTNET_RPC = "https://rpc.testnet.arc.io";
 const ARC_TESTNET_USDC = "0x3600000000000000000000000000000000000000" as const;
 
 const publicClient = createPublicClient({

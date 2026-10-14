@@ -70,7 +70,7 @@ if (!funderKey) {
 }
 
 const ARC_TESTNET_USDC = "0x3600000000000000000000000000000000000000" as const;
-const ARC_TESTNET_RPC = "https://rpc.testnet.arc.network";
+const ARC_TESTNET_RPC = "https://rpc.testnet.arc.io";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
 const DEPOSIT_AMOUNT = process.env.DEPOSIT_AMOUNT ?? "1";
