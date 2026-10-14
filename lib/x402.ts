@@ -19,6 +19,7 @@
 import { BatchFacilitatorClient } from "@circle-fin/x402-batching/server";
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "crypto";
 
 // Arc Testnet contract addresses (from @circle-fin/x402-batching SDK)
 const ARC_TESTNET_NETWORK = "eip155:5042002";
@@ -67,6 +68,30 @@ function buildPaymentRequirements(price: string) {
  * Follows fred-mvp's approach: manually constructs payment requirements with
  * the Gateway batching `extra` field and calls BatchFacilitatorClient directly.
  */
+interface IdempotencyRecord {
+  transaction: string;
+  network: string;
+  payer: string;
+  timestamp: number;
+}
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+const idempotencyCache = new Map<string, IdempotencyRecord>();
+
+function getCacheKey(payer: string, endpoint: string): string {
+  return createHash("sha256").update(`${payer}:${endpoint}`).digest("hex");
+}
+
+function getCachedRecord(cacheKey: string): IdempotencyRecord | null {
+  const record = idempotencyCache.get(cacheKey);
+  if (!record) return null;
+  if (Date.now() - record.timestamp > IDEMPOTENCY_TTL_MS) {
+    idempotencyCache.delete(cacheKey);
+    return null;
+  }
+  return record;
+}
+
 export function withGateway(
   handler: (req: NextRequest) => Promise<NextResponse>,
   price: string,
@@ -76,6 +101,7 @@ export function withGateway(
 
   return async (req: NextRequest) => {
     const paymentSignature = req.headers.get("payment-signature");
+    const idempotencyKey = req.headers.get("idempotency-key");
 
     // No payment — return 402 with Gateway batching payment requirements
     if (!paymentSignature) {
@@ -123,6 +149,30 @@ export function withGateway(
         );
       }
 
+      const payer = verifyResult.payer ?? "unknown";
+      const cacheKey = getCacheKey(payer, endpoint);
+
+      if (idempotencyKey) {
+        const cached = getCachedRecord(cacheKey);
+        if (cached) {
+          console.log(
+            `[x402] Idempotent replay: ${endpoint} — returning cached result`,
+          );
+          const response = await handler(req);
+          const settleResponseHeader = Buffer.from(
+            JSON.stringify({
+              success: true,
+              transaction: cached.transaction,
+              network: cached.network,
+              payer: cached.payer,
+              idempotent: true,
+            }),
+          ).toString("base64");
+          response.headers.set("PAYMENT-RESPONSE", settleResponseHeader);
+          return response;
+        }
+      }
+
       const settleResult = await facilitator.settle(
         paymentPayload,
         requirements,
@@ -141,11 +191,19 @@ export function withGateway(
         );
       }
 
+      if (idempotencyKey) {
+        idempotencyCache.set(cacheKey, {
+          transaction: settleResult.transaction ?? "",
+          network: requirements.network,
+          payer,
+          timestamp: Date.now(),
+        });
+      }
+
       // Record payment event in Supabase
       const amountUsdc = (
         Number(requirements.amount) / 1e6
       ).toString();
-      const payer = settleResult.payer ?? verifyResult.payer ?? "unknown";
 
       const { error } = await supabase.from("payment_events").insert({
         endpoint,
