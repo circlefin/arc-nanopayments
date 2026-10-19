@@ -64,8 +64,7 @@ export function TopBarGatewayControls() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "payment_events" },
         () => {
-          // Gateway offchain balance is credited immediately after settlement,
-          // so a single refetch is sufficient.
+          // Gateway credits the offchain balance immediately, so one refetch is enough.
           fetchBalances();
         },
       )
@@ -73,7 +72,6 @@ export function TopBarGatewayControls() {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "withdrawals" },
         () => {
-          // Wallet USDC balance may change after a withdrawal completes.
           fetchBalances();
         },
       )
