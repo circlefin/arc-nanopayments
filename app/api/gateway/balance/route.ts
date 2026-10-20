@@ -18,6 +18,7 @@
 
 import { NextResponse } from "next/server";
 import { createPublicClient, http, formatUnits, erc20Abi } from "viem";
+import { requireSession } from "@/lib/auth";
 
 const GATEWAY_API = "https://gateway-api-testnet.circle.com/v1/balances";
 const ARC_TESTNET_DOMAIN = 26;
@@ -44,6 +45,9 @@ async function getWalletUsdcBalance(address: `0x${string}`): Promise<string> {
 }
 
 export async function GET() {
+  const denied = await requireSession();
+  if (denied) return denied;
+
   const address = process.env.SELLER_ADDRESS;
   if (!address) {
     return NextResponse.json(

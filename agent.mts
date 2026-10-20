@@ -11,7 +11,6 @@ import { arcTestnet } from "viem/chains";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import * as readline from "node:readline/promises";
 
-// --- Parse CLI args ---
 function parseArgs() {
   const args = process.argv.slice(2);
   let spendingLimit: number | null = null;
@@ -60,7 +59,6 @@ async function promptForAllowance(): Promise<number> {
   }
 }
 
-// --- Funder wallet (the one you funded via Circle faucet) ---
 const funderKey = process.env.BUYER_PRIVATE_KEY as `0x${string}` | undefined;
 if (!funderKey) {
   console.error(
@@ -88,12 +86,10 @@ const endpoints = [
   { url: `${BASE_URL}/api/premium/agent-task`, method: "GET" as const },
 ];
 
-// --- Generate ephemeral wallet ---
 const ephemeralKey = generatePrivateKey();
 const ephemeralAccount = privateKeyToAccount(ephemeralKey);
 console.log(`Ephemeral agent wallet: ${ephemeralAccount.address}`);
 
-// --- Fund the ephemeral wallet from the funder ---
 const funderAccount = privateKeyToAccount(funderKey);
 const publicClient = createPublicClient({
   chain: arcTestnet,
@@ -111,8 +107,7 @@ console.log(
 
 const usdcAmount = parseUnits(DEPOSIT_AMOUNT, 6);
 
-// Retry helper for nonce collisions when multiple agents fund from the same wallet concurrently.
-// On collision the other agent's tx confirms first, shifting the nonce — a short retry resolves it.
+// Retry on nonce collisions when several agents fund from the same wallet.
 async function withNonceRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   const MAX_RETRIES = 5;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -133,8 +128,7 @@ async function withNonceRetry<T>(fn: () => Promise<T>, label: string): Promise<T
   throw new Error("unreachable");
 }
 
-// Send native USDC for gas, wait for confirmation, then send ERC-20 USDC.
-// Sequential + retry ensures correct nonce ordering even with concurrent agents.
+// Gas first and confirmed, then the ERC-20 transfer, so nonces stay ordered under concurrency.
 const gasTxHash = await withNonceRetry(
   () => funderWallet.sendTransaction({ to: ephemeralAccount.address, value: GAS_FUND_AMOUNT }),
   "Gas tx",
@@ -154,8 +148,6 @@ const usdcTxHash = await withNonceRetry(
 await publicClient.waitForTransactionReceipt({ hash: usdcTxHash });
 console.log(`  USDC transferred (${usdcTxHash.slice(0, 10)}...)`);
 
-
-// --- Create GatewayClient with the ephemeral wallet ---
 const gateway = new GatewayClient({
   chain: "arcTestnet",
   privateKey: ephemeralKey,
@@ -167,8 +159,7 @@ let redepositing = false;
 let paymentInterval: ReturnType<typeof setInterval>;
 let balanceInterval: ReturnType<typeof setInterval>;
 
-// Auto-redeposit when balance drops below 0.5 USDC (atomic units).
-// Leaves plenty of runway for payments while the deposit tx confirms.
+// Redeposit once the balance drops below 0.5 USDC (atomic units).
 const REDEPOSIT_THRESHOLD = 500_000n;
 
 async function depositToGateway() {
@@ -182,7 +173,6 @@ async function depositToGateway() {
 }
 
 async function refundAndRedeposit() {
-  // Transfer more USDC from funder to ephemeral, then deposit into Gateway
   const txHash = await withNonceRetry(
     () => funderWallet.writeContract({
       address: ARC_TESTNET_USDC,
@@ -205,11 +195,9 @@ async function checkAndRedeposit() {
       console.log(
         `\nGateway balance low (${balances.gateway.formattedAvailable}), redepositing...`,
       );
-      // Check if ephemeral wallet has USDC to deposit directly
       if (balances.wallet.balance > 0n) {
         await depositToGateway();
       } else {
-        // Pull more from the funder
         await refundAndRedeposit();
       }
     }
@@ -220,15 +208,13 @@ async function checkAndRedeposit() {
   }
 }
 
-// Initial Gateway deposit
 await depositToGateway();
 
 console.log(
   `\nTarget: 1 transaction/second across ${endpoints.length} endpoints\n`,
 );
 
-// Check balance every 30 seconds and redeposit if low.
-// Runs fully async — payments continue uninterrupted during deposit.
+// Poll every 30s and redeposit asynchronously so payments keep flowing.
 balanceInterval = setInterval(checkAndRedeposit, 30_000);
 
 async function handleLimitReached() {
@@ -238,7 +224,6 @@ async function handleLimitReached() {
   clearInterval(paymentInterval);
   clearInterval(balanceInterval);
 
-  // Wait for in-flight payments to settle
   while (inFlight > 0) {
     await new Promise((r) => setTimeout(r, 100));
   }

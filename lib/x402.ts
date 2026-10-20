@@ -19,19 +19,26 @@
 import { BatchFacilitatorClient } from "@circle-fin/x402-batching/server";
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { isAddress } from "viem";
 
 // Arc Testnet contract addresses (from @circle-fin/x402-batching SDK)
 const ARC_TESTNET_NETWORK = "eip155:5042002";
 const ARC_TESTNET_USDC = "0x3600000000000000000000000000000000000000";
 const ARC_TESTNET_GATEWAY_WALLET = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
 
-export const sellerAddress = process.env.SELLER_ADDRESS as `0x${string}`;
+/** The seller wallet that receives payments, or null if SELLER_ADDRESS is missing or malformed. */
+function getSellerAddress(): `0x${string}` | null {
+  const address = process.env.SELLER_ADDRESS;
+  return address && isAddress(address, { strict: false })
+    ? (address as `0x${string}`)
+    : null;
+}
 
 const facilitator = new BatchFacilitatorClient();
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  process.env.SUPABASE_SECRET_KEY!,
 );
 
 interface PaymentPayload {
@@ -42,8 +49,7 @@ interface PaymentPayload {
   extensions?: Record<string, unknown>;
 }
 
-function buildPaymentRequirements(price: string) {
-  // Parse dollar amount to USDC atomic units (6 decimals)
+function buildPaymentRequirements(price: string, sellerAddress: `0x${string}`) {
   const amount = Math.round(parseFloat(price.replace("$", "")) * 1_000_000);
 
   return {
@@ -61,23 +67,27 @@ function buildPaymentRequirements(price: string) {
   };
 }
 
-/**
- * Wraps a Next.js route handler with Circle Gateway payment verification.
- *
- * Follows fred-mvp's approach: manually constructs payment requirements with
- * the Gateway batching `extra` field and calls BatchFacilitatorClient directly.
- */
+// Wraps a route handler with Circle Gateway payment verification.
 export function withGateway(
   handler: (req: NextRequest) => Promise<NextResponse>,
   price: string,
   endpoint: string,
 ) {
-  const requirements = buildPaymentRequirements(price);
-
   return async (req: NextRequest) => {
+    // Resolved per request so a missing SELLER_ADDRESS is a clear 500, never a
+    // payment addressed to "undefined".
+    const sellerAddress = getSellerAddress();
+    if (!sellerAddress) {
+      console.error("[x402] SELLER_ADDRESS is missing or not a valid address");
+      return NextResponse.json(
+        { error: "Payment receiver is not configured" },
+        { status: 500 },
+      );
+    }
+    const requirements = buildPaymentRequirements(price, sellerAddress);
+
     const paymentSignature = req.headers.get("payment-signature");
 
-    // No payment — return 402 with Gateway batching payment requirements
     if (!paymentSignature) {
       console.log(`[x402] 402 Payment Required: ${endpoint}`);
 
@@ -102,7 +112,6 @@ export function withGateway(
       });
     }
 
-    // Payment present — verify and settle via Circle Gateway
     try {
       const paymentPayload: PaymentPayload = JSON.parse(
         Buffer.from(paymentSignature, "base64").toString("utf-8"),
@@ -141,7 +150,6 @@ export function withGateway(
         );
       }
 
-      // Record payment event in Supabase
       const amountUsdc = (
         Number(requirements.amount) / 1e6
       ).toString();
@@ -164,10 +172,8 @@ export function withGateway(
         `[x402] Payment settled: ${endpoint} — ${amountUsdc} USDC from ${payer}`,
       );
 
-      // Call the actual route handler
       const response = await handler(req);
 
-      // Forward settlement info to the client
       const settleResponseHeader = Buffer.from(
         JSON.stringify({
           success: true,
