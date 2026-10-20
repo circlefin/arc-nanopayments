@@ -18,6 +18,7 @@
 
 import { NextResponse } from "next/server";
 import { createPublicClient, http, formatUnits, erc20Abi } from "viem";
+import { normalizeGatewayBalances } from "@/lib/gateway-balances";
 
 const GATEWAY_API = "https://gateway-api-testnet.circle.com/v1/balances";
 const ARC_TESTNET_DOMAIN = 26;
@@ -87,24 +88,15 @@ export async function GET() {
       (b: { domain: number }) => b.domain === ARC_TESTNET_DOMAIN,
     );
 
-    // Gateway API may return balance as a decimal string or atomic units
-    const raw = bal?.balance ?? "0";
-    const withdrawingRaw = bal?.withdrawing ?? "0";
-    const withdrawableRaw = bal?.withdrawable ?? "0";
-
-    const parse = (v: string) =>
-      v.includes(".") ? v : formatUnits(BigInt(v), 6);
-
-    const available = parse(raw);
-    const withdrawing = parse(withdrawingRaw);
-    const withdrawable = parse(withdrawableRaw);
-    const total = (
-      parseFloat(available) + parseFloat(withdrawing)
-    ).toFixed(6);
+    const gateway = normalizeGatewayBalances({
+      available: bal?.balance ?? "0",
+      withdrawing: bal?.withdrawing ?? "0",
+      withdrawable: bal?.withdrawable ?? "0",
+    });
 
     return NextResponse.json({
       wallet: { balance: walletBalance },
-      gateway: { total, available, withdrawing, withdrawable },
+      gateway,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

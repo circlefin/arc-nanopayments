@@ -61,7 +61,8 @@ const SUPPORTED_CHAINS = [
 ];
 
 interface WithdrawDialogProps {
-  maxAvailable: string;
+  /** null until a balance has loaded; "0" is a known zero balance. */
+  maxAvailable: string | null;
   onWithdraw: () => void;
 }
 
@@ -81,7 +82,7 @@ export function WithdrawDialog({ maxAvailable, onWithdraw }: WithdrawDialogProps
       return;
     }
 
-    if (maxAvailable !== "0" && parsedAmount > Number(maxAvailable)) {
+    if (maxAvailable !== null && parsedAmount > Number(maxAvailable)) {
       toast.error("Amount exceeds balance", {
         description: `Maximum available: ${maxAvailable} USDC`,
       });
@@ -188,7 +189,7 @@ export function WithdrawDialog({ maxAvailable, onWithdraw }: WithdrawDialogProps
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="withdraw-amount" className="text-xs">
               Amount (USDC)
-              {maxAvailable !== "0" && (
+              {maxAvailable !== null && (
                 <span className="text-muted-foreground ml-1">max: {maxAvailable}</span>
               )}
             </Label>

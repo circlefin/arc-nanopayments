@@ -5,6 +5,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "test:balances": "node --experimental-strip-types --test tests/gateway-balances.test.mjs tests/withdraw-dialog.test.mjs",
     "generate-wallets": "node --experimental-transform-types --no-warnings generate-wallets.mts",
     "agent": "node --experimental-transform-types --no-warnings --env-file=.env.local agent.mts"
   },
