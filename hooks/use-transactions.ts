@@ -48,7 +48,6 @@ export function usePaymentEvents() {
       if (error) {
         console.error("Failed to fetch payment events:", error.message);
       } else {
-        // Merge with any realtime events that arrived before the fetch completed
         setEvents((prev) => {
           if (prev.length === 0) return data as PaymentEvent[];
           const fetched = data as PaymentEvent[];
@@ -68,7 +67,6 @@ export function usePaymentEvents() {
         (payload) => {
           setEvents((prev) => {
             const newEvent = payload.new as PaymentEvent;
-            // Deduplicate: skip if already present (from initial fetch or prior event)
             if (prev.some((ev) => ev.id === newEvent.id)) return prev;
             return [newEvent, ...prev];
           });
@@ -99,8 +97,7 @@ export function usePaymentEvents() {
         },
       )
       .subscribe((status) => {
-        // Only fetch initial data once the subscription is active,
-        // so no events are missed in the gap between fetch and subscribe
+        // Fetch only once the subscription is live, so no events are missed.
         if (status === "SUBSCRIBED") {
           fetchInitial();
         }

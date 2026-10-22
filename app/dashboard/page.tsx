@@ -162,7 +162,6 @@ export default function Dashboard() {
     setPage(1);
   }
 
-  // ── Payments filtering & sorting ──
   const filteredPayments = useMemo(() => {
     let result = events;
 
@@ -191,7 +190,6 @@ export default function Dashboard() {
     return result;
   }, [events, filter, sortField, sortDirection]);
 
-  // ── Withdrawals filtering & sorting ──
   const filteredWithdrawals = useMemo(() => {
     let result = withdrawals;
 

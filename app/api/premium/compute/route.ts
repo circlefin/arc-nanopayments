@@ -18,6 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withGateway } from "@/lib/x402";
+import { resources } from "@/lib/buyer/resources";
 
 const handler = async (req: NextRequest) => {
   const body = await req.json().catch(() => ({}));
@@ -35,4 +36,4 @@ const handler = async (req: NextRequest) => {
   });
 };
 
-export const POST = withGateway(handler, "$0.0003", "/api/premium/compute");
+export const POST = withGateway(handler, `$${resources[2].price}`, resources[2].path);

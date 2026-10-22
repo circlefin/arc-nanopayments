@@ -18,6 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withGateway } from "@/lib/x402";
+import { resources } from "@/lib/buyer/resources";
 
 const handler = async (_req: NextRequest) => {
   return NextResponse.json({
@@ -32,4 +33,4 @@ const handler = async (_req: NextRequest) => {
   });
 };
 
-export const GET = withGateway(handler, "$0.01", "/api/premium/dataset");
+export const GET = withGateway(handler, `$${resources[1].price}`, resources[1].path);

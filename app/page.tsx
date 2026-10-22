@@ -77,6 +77,7 @@ export default function SignIn() {
               {pending ? "Signing in..." : "Sign in"}
             </Button>
           </form>
+          <a href="/playground" className="mt-4 block text-center text-sm underline">Try the buyer playground</a>
         </CardContent>
       </Card>
     </main>

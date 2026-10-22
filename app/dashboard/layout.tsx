@@ -31,6 +31,7 @@ export default function DashboardLayout({
       <header className="border-b">
         <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <TopBarGatewayControls />
+          <a href="/playground" className="text-sm underline">Buyer playground</a>
           <form action={logout}>
             <Button variant="ghost" size="icon" type="submit">
               <LogOut size={16} className="text-muted-foreground" />
