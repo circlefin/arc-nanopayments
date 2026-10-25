@@ -34,6 +34,8 @@ const CHAIN_METHODS = [
   "in",
   "order",
   "limit",
+  "abortSignal",
+  "retry",
 ] as const;
 
 /**

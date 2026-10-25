@@ -62,6 +62,23 @@ async function seedWithdrawal() {
 }
 
 describe("payment_events", () => {
+  it("allows service metadata observations while public clients cannot rewrite them", async () => {
+    const { id } = await seedPayment();
+    const raw = {
+      requirements: { amount: "30000" }, settleResult: { success: true },
+      resourceOutcome: { kind: "handler_error", httpStatus: 500 },
+    };
+    const update = await service.from("payment_events").update({ raw }).eq("id", id).select().single();
+    expect(update.error).toBeNull();
+    expect(update.data).toMatchObject({ raw, amount_usdc: "0.03", endpoint: marker });
+
+    const attack = await anon.from("payment_events").update({ raw: { resourceOutcome: { kind: "response", httpStatus: 200 } } }).eq("id", id).select();
+    expect(attack.data ?? []).toEqual([]);
+    const read = await anon.from("payment_events").select("raw,amount_usdc").eq("id", id).single();
+    expect(read.error).toBeNull();
+    expect(read.data).toEqual({ raw, amount_usdc: "0.03" });
+  });
+
   it("is readable with the publishable key (the dashboard's realtime feed relies on it)", async () => {
     const { id } = await seedPayment();
     const { data, error } = await anon.from("payment_events").select("id").eq("id", id);

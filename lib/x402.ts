@@ -20,6 +20,7 @@ import { BatchFacilitatorClient } from "@circle-fin/x402-batching/server";
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { isAddress } from "viem";
+import type { ResourceOutcome } from "@/lib/resource-outcome";
 
 // Arc Testnet contract addresses (from @circle-fin/x402-batching SDK)
 const ARC_TESTNET_NETWORK = "eip155:5042002";
@@ -40,6 +41,32 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SECRET_KEY!,
 );
+
+/** Execute a PostgREST thenable once; abort is not proof the write was rolled back. */
+async function observeWrite<T>(
+  operation: (signal: AbortSignal) => PromiseLike<T>,
+): Promise<T | undefined> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(controller.signal)),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          resolve(undefined);
+          controller.abort();
+        }, 2000);
+      }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+const EVENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface PaymentPayload {
   x402Version: number;
@@ -112,6 +139,8 @@ export function withGateway(
       });
     }
 
+    let settleResult: Awaited<ReturnType<typeof facilitator.settle>>;
+    let payer: string;
     try {
       const paymentPayload: PaymentPayload = JSON.parse(
         Buffer.from(paymentSignature, "base64").toString("utf-8"),
@@ -132,7 +161,7 @@ export function withGateway(
         );
       }
 
-      const settleResult = await facilitator.settle(
+      settleResult = await facilitator.settle(
         paymentPayload,
         requirements,
       );
@@ -150,49 +179,71 @@ export function withGateway(
         );
       }
 
-      const amountUsdc = (
-        Number(requirements.amount) / 1e6
-      ).toString();
-      const payer = settleResult.payer ?? verifyResult.payer ?? "unknown";
-
-      const { error } = await supabase.from("payment_events").insert({
-        endpoint,
-        payer,
-        amount_usdc: amountUsdc,
-        network: requirements.network,
-        gateway_tx: settleResult.transaction ?? null,
-        raw: { requirements, settleResult },
-      });
-
-      if (error) {
-        console.error("Failed to record payment event:", error.message);
-      }
-
-      console.log(
-        `[x402] Payment settled: ${endpoint} — ${amountUsdc} USDC from ${payer}`,
-      );
-
-      const response = await handler(req);
-
-      const settleResponseHeader = Buffer.from(
-        JSON.stringify({
-          success: true,
-          transaction: settleResult.transaction,
-          network: requirements.network,
-          payer,
-        }),
-      ).toString("base64");
-
-      response.headers.set("PAYMENT-RESPONSE", settleResponseHeader);
-      return response;
+      payer = settleResult.payer ?? verifyResult.payer ?? "unknown";
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error);
       console.error("[x402] Payment processing error:", message);
       return NextResponse.json(
-        { error: "Payment processing error", message },
+        { error: "Payment processing error" },
         { status: 500 },
       );
     }
+
+    // Gateway acceptance is known from here onward. Observation/storage failures
+    // cannot turn it into an unpaid response or prevent resource processing.
+    const acknowledgement = Buffer.from(
+      JSON.stringify({
+        success: true,
+        transaction: settleResult.transaction,
+        network: requirements.network,
+        payer,
+      }),
+    ).toString("base64");
+    const raw = { requirements, settleResult };
+    const inserted = await observeWrite((signal) =>
+      supabase.from("payment_events").insert({
+        endpoint,
+        payer,
+        amount_usdc: (Number(requirements.amount) / 1e6).toString(),
+        network: requirements.network,
+        gateway_tx: settleResult.transaction ?? null,
+        raw,
+      }).select("id").abortSignal(signal).retry(false).single<{ id: string }>(),
+    );
+    const id = !inserted?.error &&
+      typeof inserted?.data?.id === "string" && EVENT_ID.test(inserted.data.id)
+      ? inserted.data.id
+      : undefined;
+    if (!id) console.error("[x402] Accepted payment observation unavailable.");
+
+    let response: NextResponse;
+    let outcome: ResourceOutcome;
+    try {
+      response = await handler(req);
+      outcome = { kind: "response", httpStatus: response.status };
+    } catch {
+      // Keep known payment acceptance distinct from a resource failure.
+      console.error(`[x402] Resource handler failed after acceptance: ${endpoint}`);
+      response = NextResponse.json(
+        {
+          error: "Payment accepted, but the resource could not be produced",
+          transaction: settleResult.transaction ?? null,
+        },
+        { status: 500 },
+      );
+      outcome = { kind: "handler_error", httpStatus: 500 };
+    }
+    response.headers.set("PAYMENT-RESPONSE", acknowledgement);
+    if (id) {
+      const updated = await observeWrite((signal) =>
+        supabase.from("payment_events")
+          .update({ raw: { ...raw, resourceOutcome: outcome } })
+          .eq("id", id).abortSignal(signal).retry(false),
+      );
+      if (!updated || updated.error) console.error("[x402] Resource observation unavailable.");
+    }
+    console.log(`[x402] Payment accepted: ${endpoint}`);
+    return response;
   };
 }

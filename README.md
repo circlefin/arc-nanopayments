@@ -13,6 +13,7 @@ Circle Gateway batches many signed offchain authorizations into a single onchain
 - [How It Works](#how-it-works)
 - [Paywalled Endpoints](#paywalled-endpoints)
 - [Seller Dashboard](#seller-dashboard)
+- [Payment and Resource Outcomes](#payment-and-resource-outcomes)
 - [Environment Variables](#environment-variables)
 - [Demo Credentials](#demo-credentials)
 - [Testing](#testing)
@@ -102,7 +103,9 @@ The seller exposes several x402-protected API routes at different price points:
 | `/api/premium/compute` | POST | $0.0003 | Performs text analysis on submitted content |
 | `/api/premium/agent-task` | GET | $0.03 | Returns a clue/step for a treasure hunt task |
 
-Each endpoint returns `402 Payment Required` for unpaid requests. The buyer agent automatically signs the authorization and retries with the payment signature to receive the content.
+Each endpoint returns `402 Payment Required` for valid unpaid requests. The buyer agent automatically signs the authorization and retries with the payment signature to receive the content.
+
+`POST /api/premium/compute` validates input before payment verification, including on the unpaid request. Send `Content-Type: application/json` (parameters are allowed) with a JSON object containing a `text` string of 1–2,000 UTF-16 code units. Text is analyzed literally, without trimming; nonempty whitespace is allowed. Extra fields are ignored but count toward the 16 KiB UTF-8 body limit. The whole body must arrive within five seconds. Invalid JSON, missing/empty/non-string/too-long text return 400, unsupported media types return 415, oversized bodies return 413, and read timeouts return 408, without attempting payment. Missing text no longer falls back to default content. Valid requests retain the $0.0003 price and existing response fields.
 
 ## Seller Dashboard
 
@@ -110,7 +113,27 @@ The dashboard at `/dashboard` provides:
 
 - **Gateway Balance** — Top-bar badge showing the seller's available Gateway balance, with a detail dialog for total, withdrawing, withdrawable, and wallet USDC balances
 - **Payments Table** — Real-time list of incoming nanopayments with filtering and sorting, linked to [Arc Testnet Explorer](https://testnet.arcscan.app)
+- **Resource Outcome** — Shows whether the server produced a response after accepting payment, including returned HTTP errors and handler exceptions
 - **Withdraw Dialog** — Withdraw available USDC from Gateway to a wallet address on any supported testnet chain (Arc Testnet, Base Sepolia, Ethereum Sepolia, Arbitrum Sepolia, Optimism Sepolia, Avalanche Fuji, Polygon Amoy)
+
+## Payment and Resource Outcomes
+
+Gateway payment acceptance and resource production are separate observations. After the facilitator reports successful acceptance, `withGateway(handler, price, endpoint)` preserves the standard `PAYMENT-RESPONSE` acknowledgement even if the handler returns an HTTP error or throws. A thrown handler returns a sanitized 500 with the facilitator's transaction reference when supplied. Uncertain or rejected payment processing does not receive a success acknowledgement. Acceptance does not establish onchain finality, buyer receipt, or permission to charge again.
+
+The payments table shows:
+
+| Resource outcome | Meaning |
+| --- | --- |
+| Response produced · 200 (or another status below 400) | The handler returned a response with that HTTP status. |
+| Error response · 422 (or another status of 400+) | The handler returned an HTTP error response. |
+| Handler failed · 500 | The handler threw; the server produced a fallback error response. |
+| Not observed | No valid outcome metadata is available, including historical rows and failed or interrupted observation writes. |
+
+Payment facts are inserted before running the handler. After it completes, the server attempts one update of that same inserted row's `raw` JSON, preserving `raw.requirements` and `raw.settleResult` and adding only `raw.resourceOutcome: { kind: "response" | "handler_error", httpStatus: number }`. Payment amounts, payer, network and transaction reference remain unchanged. This refines the original migration's append-only description: payment facts stay immutable in the application, with one optional metadata update. No response body, submitted text, or handler exception is added to the public event feed.
+
+Both database writes are best effort, each with a two-second observation deadline (up to four seconds of added latency). A missing or invalid insert ID prevents the update. Neither write retries, and a timeout/abort cannot prove that a database write was rolled back. Storage errors do not prevent the handler or remove the payment acknowledgement. Late responses never trigger another write. The existing server-side Supabase secret client performs updates; public clients retain read access and cannot write. No migration or new environment variables are needed. Realtime updates preserve known outcomes over stale snapshots and duplicate insert events.
+
+There is no refund, replay recovery, automatic retry, job tracking or delivery guarantee. The handler runs once per accepted wrapper invocation; this does not provide exactly-once execution across repeated requests. Existing clients must inspect the payment acknowledgement as well as the resource HTTP status before considering another payment.
 
 ## Environment Variables
 
@@ -161,7 +184,7 @@ The app uses a hardcoded demo account for local development:
 
 ## Testing
 
-- `npm test` runs the unit tests in `tests/unit`. They mock Supabase and the Circle SDKs, so they need no credentials or Docker.
+- `npm test` runs the unit tests in `tests/unit`, with no credentials or Docker. Lifecycle regressions use the installed Supabase/PostgREST client with an inert HTTP transport and a mocked Circle facilitator; they make no payments. Tests cover validation before payment, accepted handler failures, bounded writes, concurrent requests, realtime races and dashboard labels.
 - `npm run test:integration` runs `tests/integration` against the local Supabase stack.
 
 ## Security & Usage Model
