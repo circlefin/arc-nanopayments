@@ -18,11 +18,9 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withGateway } from "@/lib/x402";
+import { ComputeInputError, readComputeText } from "@/lib/compute-input";
 
-const handler = async (req: NextRequest) => {
-  const body = await req.json().catch(() => ({}));
-  const text = (body as { text?: string }).text ?? "No input provided.";
-
+const handler = async (text: string) => {
   const words = text.split(/\s+/).filter(Boolean);
   const sentences = text.split(/[.!?]+/).filter(Boolean);
 
@@ -35,4 +33,15 @@ const handler = async (req: NextRequest) => {
   });
 };
 
-export const POST = withGateway(handler, "$0.0003", "/api/premium/compute");
+export async function POST(req: NextRequest) {
+  let text: string;
+  try {
+    text = await readComputeText(req);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof ComputeInputError ? error.message : "Invalid request body." },
+      { status: error instanceof ComputeInputError ? error.status : 400 },
+    );
+  }
+  return withGateway(() => handler(text), "$0.0003", "/api/premium/compute")(req);
+}

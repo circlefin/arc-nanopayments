@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import { readResourceOutcome, retainResourceOutcome } from "@/lib/resource-outcome";
 
 export type PaymentEvent = {
   id: string;
@@ -48,10 +49,11 @@ export function usePaymentEvents() {
       if (error) {
         console.error("Failed to fetch payment events:", error.message);
       } else {
-        // Merge with any realtime events that arrived before the fetch completed
         setEvents((prev) => {
-          if (prev.length === 0) return data as PaymentEvent[];
-          const fetched = data as PaymentEvent[];
+          const previous = new Map(prev.map((event) => [event.id, event]));
+          const fetched = (data as PaymentEvent[]).map((event) =>
+            retainResourceOutcome(previous.get(event.id), event),
+          );
           const existingIds = new Set(fetched.map((e) => e.id));
           const realtimeOnly = prev.filter((e) => !existingIds.has(e.id));
           return [...realtimeOnly, ...fetched];
@@ -68,8 +70,11 @@ export function usePaymentEvents() {
         (payload) => {
           setEvents((prev) => {
             const newEvent = payload.new as PaymentEvent;
-            // Deduplicate: skip if already present (from initial fetch or prior event)
-            if (prev.some((ev) => ev.id === newEvent.id)) return prev;
+            if (prev.some((ev) => ev.id === newEvent.id)) {
+              return prev.map((ev) =>
+                ev.id === newEvent.id ? retainResourceOutcome(ev, newEvent) : ev,
+              );
+            }
             return [newEvent, ...prev];
           });
         },
@@ -78,13 +83,16 @@ export function usePaymentEvents() {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "payment_events" },
         (payload) => {
-          setEvents((prev) =>
-            prev.map((ev) =>
-              ev.id === (payload.new as PaymentEvent).id
-                ? (payload.new as PaymentEvent)
-                : ev,
-            ),
-          );
+          setEvents((prev) => {
+            const updated = payload.new as PaymentEvent;
+            if (!prev.some((ev) => ev.id === updated.id)) {
+              // A final observation can arrive while the initial query is pending.
+              return readResourceOutcome(updated.raw) ? [updated, ...prev] : prev;
+            }
+            return prev.map((ev) =>
+              ev.id === updated.id ? retainResourceOutcome(ev, updated) : ev,
+            );
+          });
         },
       )
       .on(
@@ -99,8 +107,7 @@ export function usePaymentEvents() {
         },
       )
       .subscribe((status) => {
-        // Only fetch initial data once the subscription is active,
-        // so no events are missed in the gap between fetch and subscribe
+        // Fetch only once the subscription is live, so no events are missed.
         if (status === "SUBSCRIBED") {
           fetchInitial();
         }
