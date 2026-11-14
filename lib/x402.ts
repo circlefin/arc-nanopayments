@@ -19,6 +19,7 @@
 import { BatchFacilitatorClient } from "@circle-fin/x402-batching/server";
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { evaluatePaymentPolicy, loadPolicy } from "./payment-policy";
 
 // Arc Testnet contract addresses (from @circle-fin/x402-batching SDK)
 const ARC_TESTNET_NETWORK = "eip155:5042002";
@@ -107,6 +108,22 @@ export function withGateway(
       const paymentPayload: PaymentPayload = JSON.parse(
         Buffer.from(paymentSignature, "base64").toString("utf-8"),
       );
+
+      // Policy first: refuse before the facilitator is asked to verify or settle, so a payment we
+      // should never accept does not enter the settlement path at all. Opt-in via PAYSTAGE_POLICY.
+      const policy = loadPolicy();
+      if (policy) {
+        const decision = evaluatePaymentPolicy(requirements, policy);
+        if (!decision.allow) {
+          return NextResponse.json(
+            {
+              error: "Payment refused by policy",
+              reasons: decision.reasons ?? [],
+            },
+            { status: 402 },
+          );
+        }
+      }
 
       const verifyResult = await facilitator.verify(
         paymentPayload,
